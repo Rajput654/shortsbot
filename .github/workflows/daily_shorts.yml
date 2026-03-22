@@ -1,95 +1,51 @@
-# .github/workflows/daily_shorts.yml
-# Triggers Railway/Render bot 4x daily at optimal IST times
-# GitHub Actions is FREE — 2,000 mins/month on free tier
-# This workflow just pings your deployed server — it's < 1 min each run
-
 name: Daily Animal Shorts Bot
 
 on:
   schedule:
-    # All times in UTC (IST = UTC + 5:30)
-    - cron: "30 2 * * *"    # 8:00 AM IST  — Morning commute
-    - cron: "30 6 * * *"    # 12:00 PM IST — Lunch break
-    - cron: "30 12 * * *"   # 6:00 PM IST  — Evening PEAK ⭐
-    - cron: "30 15 * * *"   # 9:00 PM IST  — Night scroll
-
-  # Also allow manual trigger from GitHub UI
+    - cron: "0 2 * * *"
   workflow_dispatch:
-    inputs:
-      count:
-        description: "Number of videos to generate"
-        required: false
-        default: "1"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 720
 
     steps:
-      - name: Trigger bot pipeline
-        run: |
-          echo "🤖 Triggering AnimalShortsBot pipeline..."
-          echo "Time: $(date)"
-
-          # Option A: If deployed on Railway/Render with a webhook endpoint
-          if [ -n "${{ secrets.BOT_WEBHOOK_URL }}" ]; then
-            curl -X POST "${{ secrets.BOT_WEBHOOK_URL }}" \
-              -H "Authorization: Bearer ${{ secrets.BOT_SECRET }}" \
-              -H "Content-Type: application/json" \
-              -d '{"action": "generate_and_upload", "count": 1}' \
-              --max-time 1200 \
-              --retry 2
-            echo "✅ Webhook triggered"
-
-          # Option B: Run directly in GitHub Actions (uses GH compute, no server needed)
-          else
-            echo "Running pipeline directly in GitHub Actions..."
-          fi
-
-      # Option B: Direct run in GitHub Actions (no external server needed)
-      - name: Checkout (for direct run)
-        if: ${{ secrets.BOT_WEBHOOK_URL == '' }}
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        if: ${{ secrets.BOT_WEBHOOK_URL == '' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
       - name: Install FFmpeg
-        if: ${{ secrets.BOT_WEBHOOK_URL == '' }}
         run: |
           sudo apt-get update -q
           sudo apt-get install -y ffmpeg fonts-liberation
-          ffmpeg -version | head -1
+          echo "FFMPEG_PATH=$(which ffmpeg)" >> $GITHUB_ENV
+          echo "FFPROBE_PATH=$(which ffprobe)" >> $GITHUB_ENV
 
-      - name: Install Python dependencies
-        if: ${{ secrets.BOT_WEBHOOK_URL == '' }}
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Download caption font
-        if: ${{ secrets.BOT_WEBHOOK_URL == '' }}
+      - name: Download font
         run: |
           mkdir -p assets
-          wget -q "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" \
-            -O assets/font.ttf && echo "Font downloaded" || echo "Font download failed, using default"
+          wget -q "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" -O assets/font.ttf || echo "Font skipped"
 
-      - name: Run pipeline (1 video per trigger)
-        if: ${{ secrets.BOT_WEBHOOK_URL == '' }}
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Run bot
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           YT_CREDENTIALS: ${{ secrets.YT_CREDENTIALS }}
-          VIDEOS_PER_DAY: "1"
+          FFMPEG_PATH: ${{ env.FFMPEG_PATH }}
+          FFPROBE_PATH: ${{ env.FFPROBE_PATH }}
+          VIDEOS_PER_DAY: "4"
+          TTS_VOICE: "en-US-AndrewNeural"
+          YT_CATEGORY: "15"
         run: python main.py
-
-      - name: Upload artifacts on failure (for debugging)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-output
-          path: output/
-          retention-days: 1
