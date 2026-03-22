@@ -1,0 +1,25 @@
+
+```
+
+Paste this inside:
+```
+# Large files — don't push to GitHub
+output/
+assets/music/
+*.mp4
+*.mp3
+*.wav
+*.zip
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Credentials — keep private
+yt_credentials.json
+.env
+
+# Logs
+bot_log.txt
+used_animals.json
