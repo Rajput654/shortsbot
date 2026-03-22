@@ -1,0 +1,11 @@
+# nixpacks.toml — Railway deployment config
+# This tells Railway to install FFmpeg (needed for video assembly)
+
+[phases.setup]
+nixPkgs = ["ffmpeg", "python311", "python311Packages.pip"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python main.py"

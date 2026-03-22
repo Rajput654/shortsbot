@@ -1,0 +1,46 @@
+{
+  "used": [
+    "shark",
+    "octopus",
+    "mantis",
+    "cheetah",
+    "axolotl",
+    "bombardier beetle",
+    "naked mole rat",
+    "anaconda"
+  ],
+  "history": [
+    {
+      "animal": "shark",
+      "date": "2026-03-22 15:11"
+    },
+    {
+      "animal": "octopus",
+      "date": "2026-03-22 15:11"
+    },
+    {
+      "animal": "mantis",
+      "date": "2026-03-22 15:11"
+    },
+    {
+      "animal": "cheetah",
+      "date": "2026-03-22 15:11"
+    },
+    {
+      "animal": "axolotl",
+      "date": "2026-03-22 15:15"
+    },
+    {
+      "animal": "bombardier beetle",
+      "date": "2026-03-22 15:15"
+    },
+    {
+      "animal": "naked mole rat",
+      "date": "2026-03-22 15:15"
+    },
+    {
+      "animal": "anaconda",
+      "date": "2026-03-22 15:15"
+    }
+  ]
+}
