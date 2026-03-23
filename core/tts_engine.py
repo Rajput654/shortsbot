@@ -46,7 +46,7 @@ async def _edge_tts(text: str, output_path: str, voice: str = EDGE_VOICE) -> str
     communicate = edge_tts.Communicate(
         text=text,
         voice=voice,
-        rate="+8%",
+        rate="+14%",
         volume="+0%",
         pitch="+0Hz"
     )
