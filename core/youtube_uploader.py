@@ -55,8 +55,8 @@ def _upload_sync(video_path: str, title: str, description: str, tags: list[str])
     if "#Shorts" not in title and "#shorts" not in title:
         title = title + " #Shorts"
 
-    # Trim title to YouTube's 100-char limit
-    title = title[:100]
+    # Trim title to 60 chars — shorter titles show fully in Shorts feed = better CTR
+    title = title[:60]
 
     # Clean tags — remove # prefix for YouTube tags array
     clean_tags = []
