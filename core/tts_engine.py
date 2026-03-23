@@ -3,12 +3,13 @@ TTS Engine — converts script text to speech audio.
 Uses Edge-TTS (Microsoft, completely free, no API key needed).
 Falls back to gTTS (Google, also free).
 
-VOICE UPGRADE:
-- Primary: en-US-BrianNeural (warm, energetic, less robotic than Andrew)
-- Backup 1: en-US-EmmaMultilingualNeural (very natural female voice)
-- Backup 2: en-GB-RyanNeural (least robotic, natural emphasis)
-- Rate slowed slightly from +14% to +8% — Brian already speaks fast,
-  and slower = more human, better retention on Shorts.
+UPDATES v2:
+- generate_voiceover_with_timings() — new primary function that returns
+  BOTH the audio path AND word-level timing data in one call.
+  This avoids running TTS twice (once for audio, once for boundaries).
+- Primary: en-US-BrianNeural (warm, energetic)
+- Rate +8% — natural speed for Shorts
+- Word boundary capture is baked in alongside audio save
 """
 
 import os, asyncio, logging, re
@@ -20,53 +21,92 @@ log = logging.getLogger(__name__)
 
 FFPROBE = os.getenv("FFPROBE_PATH", "ffprobe")
 
-# PRIMARY VOICE — Brian is warmer and more energetic than Andrew
 EDGE_VOICE = os.getenv("TTS_VOICE", "en-US-BrianNeural")
 
-# Fallback chain — ordered by naturalness
 BACKUP_VOICES = [
-    "en-US-EmmaMultilingualNeural",  # Very natural, multilingual
-    "en-GB-RyanNeural",               # Least robotic per community feedback
-    "en-US-ChristopherNeural",        # Good energy
-    "en-US-EricNeural",               # Clean fallback
+    "en-US-EmmaMultilingualNeural",
+    "en-GB-RyanNeural",
+    "en-US-ChristopherNeural",
+    "en-US-EricNeural",
 ]
 
+# 100-nanosecond ticks per second (Edge-TTS uses Windows FILETIME units)
+TICKS_PER_SECOND = 10_000_000
 
-async def generate_voiceover(text: str, output_path: str) -> str:
+
+async def generate_voiceover_with_timings(text: str, output_path: str) -> tuple[str, list[dict]]:
+    """
+    PRIMARY function — generates voiceover AND captures word-level timings
+    in a single TTS pass. More efficient than running TTS twice.
+
+    Returns:
+        (audio_path, word_timings)
+        word_timings: list of {word, start, end} dicts with times in seconds
+    """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     clean_text = clean_for_tts(text)
-    log.info(f"TTS text length: {len(clean_text)} chars")
-    log.info(f"TTS preview: {clean_text[:120]}...")
 
     try:
-        return await _edge_tts(clean_text, output_path)
+        return await _edge_tts_with_timings(clean_text, output_path)
     except Exception as e:
         log.warning(f"Edge-TTS primary failed: {e} — trying backup voices")
 
     for voice in BACKUP_VOICES:
         try:
-            return await _edge_tts(clean_text, output_path, voice=voice)
+            return await _edge_tts_with_timings(clean_text, output_path, voice=voice)
         except Exception as e:
             log.warning(f"Backup voice {voice} failed: {e}")
 
-    log.warning("Falling back to gTTS...")
-    return await _gtts(clean_text, output_path)
+    # Final fallback — no timings available
+    log.warning("Falling back to gTTS (no word timings available)")
+    path = await _gtts(clean_text, output_path)
+    return path, []
 
 
-async def _edge_tts(text: str, output_path: str, voice: str = EDGE_VOICE) -> str:
+async def generate_voiceover(text: str, output_path: str) -> str:
+    """Legacy wrapper — returns only the audio path."""
+    path, _ = await generate_voiceover_with_timings(text, output_path)
+    return path
+
+
+async def _edge_tts_with_timings(
+    text: str, output_path: str, voice: str = EDGE_VOICE
+) -> tuple[str, list[dict]]:
+    """
+    Run Edge-TTS, save audio AND capture WordBoundary events in one pass.
+    Edge-TTS streams audio chunks and metadata events simultaneously.
+    """
     import edge_tts
+
     communicate = edge_tts.Communicate(
         text=text,
         voice=voice,
-        rate="+8%",     # Slightly faster than default but not rushed — sounds natural
+        rate="+8%",
         volume="+0%",
         pitch="+0Hz"
     )
+
     tmp_path = output_path + ".tmp.mp3"
-    await communicate.save(tmp_path)
+    boundaries = []
+
+    with open(tmp_path, "wb") as f:
+        async for event in communicate.stream():
+            if event["type"] == "audio":
+                f.write(event["data"])
+            elif event["type"] == "WordBoundary":
+                start_sec = event["offset"] / TICKS_PER_SECOND
+                duration_sec = event["duration"] / TICKS_PER_SECOND
+                word = event.get("text", "").strip()
+                if word:
+                    boundaries.append({
+                        "word": word.upper(),
+                        "start": round(start_sec, 3),
+                        "end": round(start_sec + duration_sec, 3),
+                    })
+
     os.replace(tmp_path, output_path)
-    log.info(f"Edge-TTS success: {voice} → {output_path}")
-    return output_path
+    log.info(f"Edge-TTS success: {voice} — {len(boundaries)} word boundaries captured → {output_path}")
+    return output_path, boundaries
 
 
 async def _gtts(text: str, output_path: str) -> str:
@@ -83,21 +123,10 @@ async def _gtts(text: str, output_path: str) -> str:
 def clean_for_tts(text: str) -> str:
     """
     Clean text AND add natural speech patterns.
-    
-    Key insight: Edge-TTS reads punctuation as breath/pause cues.
-    - Commas = short pause (natural breath)
-    - Ellipsis (...) = longer dramatic pause
-    - Exclamation = rising energy
-    - Em dash (—) = mid-sentence pause/pivot
-    
-    We strip hashtags/URLs/emojis but KEEP and ENHANCE punctuation
-    to make the voice sound more human and less like a robot reading.
+    Edge-TTS reads punctuation as breath/pause cues.
     """
-    # Remove hashtags
     text = re.sub(r'#\w+', '', text)
-    # Remove URLs
     text = re.sub(r'http\S+', '', text)
-    # Remove emojis
     text = re.sub(
         r'[\U00010000-\U0010ffff'
         r'\U0001F600-\U0001F64F'
@@ -108,39 +137,23 @@ def clean_for_tts(text: str) -> str:
         '', text, flags=re.UNICODE
     )
 
-    # ── Naturalness enhancements ──────────────────────────────────────────
-
-    # "Wait for it" beats — add dramatic pause before reveal
     text = re.sub(
         r'\b(wait for it|but wait|here\'s the thing|get this|ready for this)\b',
         r'... \1 ...',
         text, flags=re.IGNORECASE
     )
-
-    # "Yes really" confirmation — add slight pause before
     text = re.sub(
         r'\b(yes really|yes, really|no really|seriously)\b',
         r'... \1',
         text, flags=re.IGNORECASE
     )
-
-    # Numbers with units — add comma after big numbers to force slight pause
-    # e.g. "23 times" → "23, times" feels more punchy when spoken
     text = re.sub(r'(\d+) (times|miles|feet|pounds|tons|mph|kmh)', r'\1, \2', text)
-
-    # "That is like" comparisons — add em dash for emphasis
     text = re.sub(r'(that\'?s? like )', r'— \1', text, flags=re.IGNORECASE)
-
-    # Transition phrases — natural pause
     text = re.sub(r'\b(And here\'?s? the crazy part|The insane part is|The wild thing is)\b',
                   r'... \1', text, flags=re.IGNORECASE)
 
-    # Clean up multiple spaces/newlines
     text = re.sub(r'\s+', ' ', text).strip()
-
-    # Clean up triple+ dots to exactly three
     text = re.sub(r'\.{4,}', '...', text)
-
     return text
 
 
