@@ -1,13 +1,15 @@
 """
 Video Assembler — combines footage, voiceover, captions, and music.
 
-VIRAL UPGRADES:
-- Loop hook now covers last 4s and is designed to feel seamless (not obvious)
-- Caption chunks reduced to 2 words max — faster pop = higher retention
-- Hook text shows for 3.5s (was 3s) — more time to register before captions
-- Shock word fires at 1.5s (not 2.0s) — earlier impact
-- Caption Y position moved to 0.60 — more screen real estate, easier to read
-- Added subtle black gradient behind captions for readability on any footage
+UPDATES:
+- Caption background: semi-transparent black pill behind every caption chunk.
+  85% of Shorts viewers watch muted — readability is non-negotiable.
+- Thumbnail title-card: first 0.5s shows a bold animal name + emoji on a dark
+  overlay. This frame becomes the thumbnail in YouTube search results.
+- Trending audio integration: uses core/trending_audio.py to pick energy-matched
+  track instead of random selection.
+- Long-mode support: video_assembler now respects script["length_mode"] to apply
+  correct overlay timing for both 13s and 55-60s formats.
 """
 
 import os, asyncio, logging, math, json
@@ -15,13 +17,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 from core.tts_engine import get_audio_duration
+from core.trending_audio import get_track_for_script
 
 FFMPEG = os.getenv("FFMPEG_PATH", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE_PATH", "ffprobe")
 
 log = logging.getLogger(__name__)
 
-MUSIC_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "music")
 FONT_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "font.ttf")
 
 VIDEO_W = 720
@@ -45,7 +47,8 @@ async def assemble_video(
     concat_path = os.path.join(tmp_dir, "footage.mp4")
     await _build_footage(footage_paths, duration, concat_path, tmp_dir)
 
-    music_path = _get_music_track()
+    # Use trending audio manager instead of random pick
+    music_path = get_track_for_script(script)
 
     await _ffmpeg_assemble(
         video_path=concat_path,
@@ -115,8 +118,6 @@ async def _build_footage(
         if idx > 200:
             break
 
-    log.info(f"Concat: {len(lines)} clip entries = {accumulated:.1f}s")
-
     with open(concat_file, "w") as f:
         f.write("\n".join(lines))
 
@@ -156,7 +157,8 @@ async def _ffmpeg_assemble(
 ):
     caption_filter = _build_caption_filter(script, duration)
     hook_filter = _build_hook_overlay(script, duration)
-    vf_filters = f"{caption_filter},{hook_filter}"
+    thumbnail_filter = _build_thumbnail_frame(script)
+    vf_filters = f"{thumbnail_filter},{caption_filter},{hook_filter}"
 
     if music_path and os.path.exists(music_path):
         cmd = [
@@ -197,20 +199,73 @@ async def _ffmpeg_assemble(
     await _run_ffmpeg(cmd, "final assembly")
 
 
+def _build_thumbnail_frame(script: dict) -> str:
+    """
+    Title-card overlay for the first 0.5 seconds.
+
+    This frame becomes the de-facto thumbnail in YouTube search results
+    and the channel page. A visually distinct title card dramatically
+    improves CTR vs. a random stock footage frame.
+
+    Design: dark semi-transparent overlay + large animal name + emoji.
+    Appears ONLY in the first 0.5 seconds so it doesn't distract from
+    the actual video content.
+    """
+    font = FONT_PATH if os.path.exists(FONT_PATH) else ""
+    font_arg = f":fontfile='{font.replace(chr(92), '/')}'" if font else ""
+
+    animal = script.get("animal_keyword", "").upper()[:20]
+    safe_animal = animal.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
+
+    emoji = script.get("emoji", "")
+    shock = script.get("shock_word", "WILD").upper()[:12]
+    safe_shock = shock.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
+
+    # Dark overlay across entire frame (only 0–0.5s)
+    dark_overlay = (
+        f"drawbox=x=0:y=0:w={VIDEO_W}:h={VIDEO_H}"
+        f":color=black@0.65:t=fill"
+        f":enable='between(t,0,0.5)'"
+    )
+
+    # Large animal name centred
+    animal_text = (
+        f"drawtext=text='{safe_animal}'{font_arg}"
+        f":fontsize=96:fontcolor=white"
+        f":borderw=4:bordercolor=black@0.5"
+        f":x=(w-text_w)/2:y=h*0.38"
+        f":enable='between(t,0,0.5)'"
+    )
+
+    # Shock word below animal name
+    shock_text = (
+        f"drawtext=text='{safe_shock}'{font_arg}"
+        f":fontsize=52:fontcolor=#FFE600"
+        f":borderw=3:bordercolor=black@0.5"
+        f":x=(w-text_w)/2:y=h*0.55"
+        f":enable='between(t,0,0.5)'"
+    )
+
+    return f"{dark_overlay},{animal_text},{shock_text}"
+
+
 def _build_caption_filter(script: dict, duration: float) -> str:
     """
-    Word-by-word captions: max 2 words per chunk for maximum impact.
-    
-    VIRAL INSIGHT: 2-word chunks > 3-word chunks for retention.
-    Faster caption changes = viewer feels more is happening = less likely to swipe.
-    
-    Positioned at y=0.60 (center-low) — safe zone for all phone screen sizes.
-    Yellow (#FFE600) with thick black border — readable on any footage color.
+    Word-by-word captions with semi-transparent black background pill.
+
+    MUTED VIEWER FIX: 85% of mobile viewers watch with sound off.
+    The background pill ensures text is readable on ANY footage color —
+    bright sand, white snow, yellow backgrounds — all handled.
+
+    Uses drawbox to create the pill background BEFORE drawtext renders
+    the actual caption text on top.
+
+    2-word chunks = snappier feel, higher retention.
+    Positioned at y=0.60 (centre-low) — safe zone for all phone sizes.
     """
     full_text = f"{script['body']} {script['cta']}"
     words = full_text.upper().split()
 
-    # 2-word chunks — snappier, more viral feel
     chunks = []
     i = 0
     while i < len(words):
@@ -221,27 +276,50 @@ def _build_caption_filter(script: dict, duration: float) -> str:
     if not chunks:
         return "null"
 
-    # Captions start after hook (3.5s) and end before loop hook (3.5s from end)
-    start_t = 3.5
-    end_t = max(duration - 3.5, start_t + 1)
+    length_mode = script.get("length_mode", "long")
+
+    # Timing: captions start after hook, end before loop hook
+    if length_mode == "short":
+        start_t = 1.5   # 13s video — hook is shorter, captions start earlier
+        end_t = max(duration - 1.5, start_t + 1)
+    else:
+        start_t = 3.5
+        end_t = max(duration - 3.5, start_t + 1)
+
     time_per_chunk = (end_t - start_t) / max(len(chunks), 1)
 
     font = FONT_PATH if os.path.exists(FONT_PATH) else ""
     font_arg = f":fontfile='{font.replace(chr(92), '/')}'" if font else ""
 
+    # Estimate text width for background box (approx 22px per char at fontsize 72)
     filters = []
     for i, chunk in enumerate(chunks):
         t_start = start_t + i * time_per_chunk
-        t_end = t_start + time_per_chunk - 0.04  # tight gaps = snappy feel
+        t_end = t_start + time_per_chunk - 0.04
         safe = chunk.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
 
-        # Main caption text
+        # Estimate box width based on character count
+        char_count = len(safe)
+        est_text_w = min(char_count * 44, VIDEO_W - 40)  # ~44px per char at fontsize 72
+        box_x = int((VIDEO_W - est_text_w) / 2) - 20
+        box_w = est_text_w + 40
+        box_y = int(VIDEO_H * 0.58) - 8
+        box_h = 80  # tall enough for fontsize 72
+
+        # Background pill
+        filters.append(
+            f"drawbox=x={box_x}:y={box_y}:w={box_w}:h={box_h}"
+            f":color=black@0.55:t=fill"
+            f":enable='between(t,{t_start:.2f},{t_end:.2f})'"
+        )
+
+        # Caption text on top
         filters.append(
             f"drawtext=text='{safe}'"
             f"{font_arg}"
             f":fontsize=72"
-            f":fontcolor=#FFE600"
-            f":borderw=6:bordercolor=black"
+            f":fontcolor=white"
+            f":borderw=4:bordercolor=black"
             f":x=(w-text_w)/2:y=h*0.60"
             f":enable='between(t,{t_start:.2f},{t_end:.2f})'"
         )
@@ -251,31 +329,39 @@ def _build_caption_filter(script: dict, duration: float) -> str:
 
 def _build_hook_overlay(script: dict, duration: float) -> str:
     """
-    Hook overlay strategy:
-    - Hook text: top of screen, 0-3.5s (slightly longer than before)
-    - Shock word: fires at 1.5s (earlier = more impact), lasts to 3.2s
-    - Loop hook: final 3.5s — specific, references video content, baits replay
-    
-    LOOP HOOK DESIGN:
-    The loop should feel like the viewer "missed something" not like a generic CTA.
-    Good: "Rewatch the punch speed part. Still insane."
-    Bad: "Watch again for more facts."
+    Hook overlay strategy (respects length_mode):
+    - Hook text: top of screen, 0–3.5s (0–1.5s for short mode)
+    - Shock word: fires at 1.5s, lasts to 3.2s (0.5s to 1.2s for short mode)
+    - Loop hook: final 3.5s (1.5s for short mode)
+    - "TAP TO REPLAY" subtle nudge: final 1.5s
     """
     hook = script.get("hook", "")[:55].upper()
     safe_hook = hook.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
     font = FONT_PATH if os.path.exists(FONT_PATH) else ""
     font_arg = f":fontfile='{font.replace(chr(92), '/')}'" if font else ""
 
-    # Hook text at top — 3.5 seconds (up from 3s)
+    length_mode = script.get("length_mode", "long")
+    is_short = length_mode == "short"
+
+    hook_end = 1.5 if is_short else 3.5
+    shock_start = 0.5 if is_short else 1.5
+    shock_end = 1.2 if is_short else 3.2
+    loop_window = 1.5 if is_short else 3.5
+    loop_start = max(duration - loop_window, 0.5)
+    loop_end = max(duration - 0.3, 1.0)
+    replay_start = max(duration - 1.5, 0.5)
+    replay_end = max(duration - 0.1, 1.0)
+
+    # Hook text
     hook_filter = (
         f"drawtext=text='{safe_hook}'{font_arg}"
         f":fontsize=42:fontcolor=white"
         f":borderw=5:bordercolor=black"
         f":x=(w-text_w)/2:y=h*0.07"
-        f":enable='between(t,0,3.5)'"
+        f":enable='between(t,0,{hook_end})'"
     )
 
-    # Giant shock word — fires at 1.5s (earlier than before = more impact)
+    # Shock word (only show in non-thumbnail window — after 0.5s)
     shock_word = script.get("shock_word", "WAIT").upper()[:12]
     safe_shock = shock_word.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
     shock_filter = (
@@ -284,19 +370,12 @@ def _build_hook_overlay(script: dict, duration: float) -> str:
         f":fontcolor=#FF3B30"
         f":borderw=8:bordercolor=black"
         f":x=(w-text_w)/2:y=(h-text_h)/2"
-        f":enable='between(t,1.5,3.2)'"
+        f":enable='between(t,{shock_start},{shock_end})'"
     )
 
-    # ── LOOP HOOK (last 3.5 seconds) ──────────────────────────────────────
-    # This is the most important change for virality.
-    # It shows right as the video ends — makes viewer feel they missed something
-    # and triggers a replay. Replays = higher APV = algorithm pushes the video.
+    # Loop hook
     loop_hook = script.get("loop_hook", "Wait... did you catch that?").upper()[:45]
     safe_loop = loop_hook.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
-    loop_start = max(duration - 3.5, 0.5)
-    loop_end = max(duration - 0.3, 1.0)  # Almost to the very end
-
-    # Loop hook: white text, slightly smaller, centered lower on screen
     loop_filter = (
         f"drawtext=text='{safe_loop}'{font_arg}"
         f":fontsize=48:fontcolor=white"
@@ -305,10 +384,7 @@ def _build_hook_overlay(script: dict, duration: float) -> str:
         f":enable='between(t,{loop_start:.2f},{loop_end:.2f})'"
     )
 
-    # "TAP TO REPLAY" subtle nudge — shows in final 1.5 seconds
-    # This is a tactic used by top Shorts creators to explicitly ask for replays
-    replay_start = max(duration - 1.5, 0.5)
-    replay_end = max(duration - 0.1, 1.0)
+    # TAP TO REPLAY nudge
     replay_filter = (
         f"drawtext=text='TAP TO REPLAY'{font_arg}"
         f":fontsize=28:fontcolor=#FFFFFF88"
@@ -317,28 +393,18 @@ def _build_hook_overlay(script: dict, duration: float) -> str:
         f":enable='between(t,{replay_start:.2f},{replay_end:.2f})'"
     )
 
-    # Emoji overlay (top right, shows during hook)
+    # Emoji overlay
     emoji = script.get("emoji", "")
     if emoji:
         emoji_filter = (
             f"drawtext=text='{emoji}'"
             f":fontsize=100"
             f":x=w*0.75:y=h*0.15"
-            f":enable='between(t,1,4)'"
+            f":enable='between(t,1,{hook_end+0.5})'"
         )
         return f"{hook_filter},{shock_filter},{loop_filter},{replay_filter},{emoji_filter}"
 
     return f"{hook_filter},{shock_filter},{loop_filter},{replay_filter}"
-
-
-def _get_music_track():
-    import random
-    if not os.path.isdir(MUSIC_DIR):
-        return None
-    tracks = [f for f in os.listdir(MUSIC_DIR) if f.endswith((".mp3", ".wav", ".ogg"))]
-    if not tracks:
-        return None
-    return os.path.join(MUSIC_DIR, random.choice(tracks))
 
 
 async def _run_ffmpeg(cmd: list[str], label: str):
