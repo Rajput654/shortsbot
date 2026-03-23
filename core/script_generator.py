@@ -1,14 +1,12 @@
 """
 Script Generator — uses Groq API (100% FREE).
-Produces 25-30 second scripts (65-75 words).
 
-VIRAL UPGRADES (based on 2025/26 YouTube Shorts algorithm research):
-- Shorter = higher completion rate. 25-30s > 32s every time.
-- Loop-bait ending that makes the video feel seamless to replay
-- Share-bait CTA: "send this to someone who needs to see it" drives shares
-  (shares are the strongest viral signal per YouTube's own data)
-- Engaged Views are what matter now (not raw views) — so hook must stop the swipe
-- Punctuation cues added to script output so TTS sounds more human
+UPDATES:
+- Scripts now output niche-specific SEO tags per animal (not just generic #Animals)
+- Scripts now output a "pinned_comment" debate question field
+- Performance feedback loop: reads performance_log.json and avoids
+  hook styles / animals that underperformed (< avg views)
+- Two length modes: "short" (~13s / 38–42 words) and "long" (~55–60s / 170–180 words)
 """
 
 import os, json, asyncio, httpx, logging
@@ -23,6 +21,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
+PERFORMANCE_LOG = os.path.join(os.path.dirname(__file__), "..", "performance_log.json")
+
 SUBNICHES = [
     "Animals with abilities so ridiculous they sound made up",
     "Animals that would absolutely destroy humans in a fight",
@@ -36,60 +36,154 @@ SUBNICHES = [
     "Animals that science still cannot explain",
 ]
 
+# Length modes: alternate to hit both viral sweet spots (13s and 60s)
+LENGTH_MODES = ["short", "long"]
+
+
 def get_todays_subniche() -> str:
     now = datetime.now()
     hour_slot = now.hour // 6
     index = (now.timetuple().tm_yday * 4 + hour_slot) % len(SUBNICHES)
     return SUBNICHES[index]
 
-def build_prompt(count: int, subniche: str, used_animals: list[str]) -> str:
+
+def get_length_mode() -> str:
+    """Alternate between short (13s) and long (60s) based on upload slot."""
+    now = datetime.now()
+    hour_slot = now.hour // 6
+    return LENGTH_MODES[hour_slot % 2]
+
+
+def load_performance_feedback() -> str:
+    """
+    Read performance_log.json and build a prompt section that tells the AI
+    which hook styles / CTAs underperformed so it avoids repeating them.
+    """
+    if not os.path.exists(PERFORMANCE_LOG):
+        return ""
+
+    try:
+        with open(PERFORMANCE_LOG, "r") as f:
+            log_data = json.load(f)
+
+        entries = log_data.get("videos", [])
+        if len(entries) < 5:
+            return ""  # Not enough data yet
+
+        # Calculate average views
+        views_list = [e.get("views", 0) for e in entries if e.get("views", 0) > 0]
+        if not views_list:
+            return ""
+
+        avg_views = sum(views_list) / len(views_list)
+
+        # Find underperformers (less than 50% of average)
+        underperformers = [
+            e for e in entries
+            if e.get("views", 0) > 0 and e.get("views", 0) < avg_views * 0.5
+        ]
+
+        # Find top performers (more than 150% of average)
+        top_performers = [
+            e for e in entries
+            if e.get("views", 0) > avg_views * 1.5
+        ]
+
+        if not underperformers and not top_performers:
+            return ""
+
+        feedback_lines = ["\n\nPERFORMANCE DATA FROM THIS CHANNEL (use this to improve):"]
+
+        if top_performers:
+            feedback_lines.append("HIGH PERFORMERS (replicate these patterns):")
+            for v in top_performers[-5:]:
+                feedback_lines.append(
+                    f"  - '{v.get('title','')}' | {v.get('views',0):,} views | "
+                    f"hook_type: {v.get('hook_type','?')} | cta_type: {v.get('cta_type','?')}"
+                )
+
+        if underperformers:
+            feedback_lines.append("AVOID THESE PATTERNS (underperformed):")
+            for v in underperformers[-5:]:
+                feedback_lines.append(
+                    f"  - '{v.get('title','')}' | {v.get('views',0):,} views | "
+                    f"hook_type: {v.get('hook_type','?')} | cta_type: {v.get('cta_type','?')}"
+                )
+
+        return "\n".join(feedback_lines)
+
+    except Exception as e:
+        log.warning(f"Could not load performance feedback: {e}")
+        return ""
+
+
+def build_prompt(count: int, subniche: str, used_animals: list[str], length_mode: str = "long") -> str:
     exclusion = build_exclusion_prompt(used_animals)
+    performance_feedback = load_performance_feedback()
+
+    if length_mode == "short":
+        length_instructions = """
+═══════════════════════════════════════
+TARGET: SHORT FORMAT — 38–42 words TOTAL. Spoken in exactly 13 seconds.
+This is the highest-completion-rate format on Shorts. One fact. One CTA. Done.
+FORMAT: hook (10–12 words) + one shocking fact (18–20 words) + cta (8–10 words)
+═══════════════════════════════════════"""
+    else:
+        length_instructions = """
+═══════════════════════════════════════
+TARGET: LONG FORMAT — 170–180 words TOTAL. Spoken in exactly 55–60 seconds.
+This maximises engaged view time and ad revenue signals.
+FORMAT: hook (15–20 words) + 3 escalating facts (120–130 words) + cta (15–20 words)
+Each fact must be MORE surprising than the last. Build to a climax.
+═══════════════════════════════════════"""
+
     return f"""You are a viral YouTube Shorts writer. You write like a hyped-up friend texting wild animal facts — casual, punchy, zero fluff. Generate {count} scripts about: "{subniche}"
 {exclusion}
+{performance_feedback}
+{length_instructions}
 
-═══════════════════════════════════════
-TARGET: 65-75 words TOTAL per script. 25-30 seconds spoken aloud.
-SHORTER = BETTER. Every extra word is a viewer lost.
-═══════════════════════════════════════
-
-CRITICAL 2025 ALGORITHM FACTS (write around these):
-1. COMPLETION RATE is king — if they watch to the end, you win. Keep it SHORT.
+CRITICAL 2025/26 ALGORITHM FACTS:
+1. COMPLETION RATE is king — if they watch to the end, you win
 2. SHARES are the #1 viral signal — write something people HAVE to send to a friend
-3. REPLAYS boost rank dramatically — make the ending loop back to the hook naturally
+3. REPLAYS boost rank dramatically — loop hook must make viewer feel they missed something
 4. ENGAGED VIEWS > raw views — the hook must physically stop someone from swiping
 
-PUNCTUATION RULES (non-negotiable — TTS voice uses these for natural pauses):
-- Use "..." before the craziest reveal — forces a dramatic pause
-- Use "—" for mid-sentence pivots and emphasis
-- Use "!" for energy peaks — but max 2 per script
+PUNCTUATION RULES (TTS voice uses these for natural pauses):
+- Use "..." before the craziest reveal
+- Use "—" for mid-sentence pivots
+- Use "!" for energy peaks — max 2 per script
 - Never end a sentence flatly if it can end with a punch
 
 HOOK FORMULA (first 2 seconds decides everything):
-Pick ONE of these proven formats:
-1. WRONG FACT OPENER: Start with something that sounds impossible, then confirm it's real
+Pick ONE format:
+1. WRONG FACT OPENER: Start with something impossible, then confirm it's real
 2. SCALE SHOCK: "This [animal] can [action] — that's like a human [relatable comparison]"
 3. VS BATTLE: "[Animal] vs [thing 10x bigger]. It wins. Every. Single. Time."
 4. CHAOS NORMAL: State the most insane fact as if it's totally boring news
 
-BODY RULES:
-- ONE punchy comparison (make it relatable to everyday life)
-- ONE "... wait for it ..." beat before the hardest-hitting fact
-- Casual vocab: "this thing", "absolutely unhinged", "for no reason", "built different", "no, seriously"
-- Real numbers only — made-up stats kill trust and shares
-
 CTA STRATEGY (pick one per script, rotate):
-TYPE A — DEBATE BAIT (forces comments): "Comment [X] or [Y]. No in between."
-TYPE B — SHARE BAIT (forces shares — strongest viral signal): "Send this to someone who'd never believe it."
-TYPE C — CHALLENGE (forces comments + shares): "Name ONE animal tougher than this. I'll wait."
-TYPE D — WRONG ANSWERS (high comment volume): "Wrong answers only — what would you do against this thing?"
+TYPE A — DEBATE BAIT: "Comment [X] or [Y]. No in between."
+TYPE B — SHARE BAIT: "Send this to someone who'd never believe it."
+TYPE C — CHALLENGE: "Name ONE animal tougher than this. I'll wait."
+TYPE D — WRONG ANSWERS: "Wrong answers only — what would you do against this thing?"
 
-LOOP HOOK STRATEGY:
-The loop_hook shows in the LAST 3 SECONDS. It must:
-- Reference something specific from the video (not generic)
-- Make viewer feel they "missed something" → triggers replay
-- Examples: "Wait... did you catch HOW FAST it actually is?"
-            "Rewatch the part about the punch. It doesn't make sense."
-            "The comparison at the start is even crazier now, right?"
+PINNED COMMENT (this goes as the first pinned comment after upload):
+- Must be a QUESTION that triggers argument or debate in the replies
+- Should directly relate to the video's main fact
+- 1 sentence, conversational, under 15 words
+- Example: "Could you survive 3 minutes with this thing? Be honest."
+
+NICHE SEO TAGS (5–7 ANIMAL-SPECIFIC hashtags for this exact animal):
+- NOT generic tags like #Animals #Wildlife
+- SPECIFIC to the animal: e.g. for mantis shrimp → #mantisshrimp #pistolshrimp #oceancreature #sealife #marinelife #underwaterworld
+- Include the animal name as a hashtag
+- Include the animal's habitat/type as hashtags
+- Think: what would someone search to find videos about THIS specific animal?
+
+LOOP HOOK (last 3.5 seconds — makes viewer feel they missed something):
+- Reference a SPECIFIC moment in the video
+- NOT generic "watch again"
+- Examples: "Rewatch the decibel number. It still doesn't make sense."
 
 Respond ONLY with valid JSON array. No markdown. Start with [
 
@@ -97,36 +191,40 @@ Respond ONLY with valid JSON array. No markdown. Start with [
   {{
     "title": "Unhinged title under 55 chars — sounds impossible but true #Shorts",
     "animal_keyword": "single animal name for Pexels video search",
-    "hook": "1-2 sentences. STOPS the swipe. 12-18 words. Uses punctuation for drama.",
-    "body": "2-3 sentences. ONE comparison. ONE '... wait for it ...' beat. 42-48 words. Conversational.",
-    "cta": "One of TYPE A/B/C/D above. 8-12 words MAX. No generic 'follow for more'.",
-    "tags": ["#Shorts", "#AnimalFacts", "#Wildlife", "#Animals", "#Facts"],
+    "length_mode": "{length_mode}",
+    "hook": "Hook text — stops the swipe. Uses punctuation for drama.",
+    "body": "Body — ONE comparison, ONE '... wait for it ...' beat. Conversational.",
+    "cta": "One of TYPE A/B/C/D above. 8–12 words MAX.",
+    "tags": ["#Shorts", "#AnimalFacts", "#Animals", "#Wildlife"],
+    "seo_tags": ["#specificanimal", "#habitat", "#animaltype", "#niche1", "#niche2"],
     "emoji": "most chaotic relevant emoji",
-    "shock_word": "ONE all-caps word for giant overlay e.g. IMPOSSIBLE / INSANE / WAIT / NOPE / WILD",
-    "loop_hook": "6-9 words referencing a SPECIFIC moment in THIS video to bait replay"
+    "shock_word": "ONE all-caps word e.g. IMPOSSIBLE / INSANE / WAIT / NOPE / WILD",
+    "loop_hook": "6–9 words referencing a SPECIFIC moment in THIS video",
+    "pinned_comment": "One debate question under 15 words for pinned comment",
+    "hook_type": "wrong_fact | scale_shock | vs_battle | chaos_normal",
+    "cta_type": "A | B | C | D"
   }}
 ]
 
-TONE CALIBRATION — copy this energy exactly:
-
+TONE — copy this energy exactly:
 BAD hook: "The mantis shrimp has a very powerful punch that scientists have studied."
 GOOD hook: "This shrimp punches so fast... it literally boils the water. Yes. Really."
 
-BAD body: "The pistol shrimp creates a cavitation bubble when it snaps its claw."
-GOOD body: "It snaps its claw and the shockwave hits 218 decibels — that's louder than a gunshot. A shrimp. Louder than a gun."
-
-BAD CTA: "Follow for more amazing animal facts every day!"
-GOOD CTA: "Send this to someone who needs to know shrimp are terrifying."
+BAD cta: "Follow for more amazing animal facts every day!"
+GOOD cta: "Send this to someone who needs to know shrimp are terrifying."
 
 BAD loop_hook: "Watch this video again for more facts."
 GOOD loop_hook: "Rewatch the decibel number. It still doesn't make sense."
 
+BAD pinned_comment: "What do you think of this animal?"
+GOOD pinned_comment: "Could a mantis shrimp punch through your hand? Be honest."
+
 FINAL RULES:
-- hook + body + cta = 65-75 words STRICTLY
+- All facts must be 100% accurate with real numbers
 - Every animal must be different from others in this batch
-- ALL facts must be 100% accurate with real numbers — fact errors destroy share rate
-- Reads naturally when spoken fast — no tongue-twisters, no awkward phrasing
-- No visual references ("as you can see") — audio only"""
+- No visual references ("as you can see") — audio only
+- No tongue-twisters or awkward phrasing"""
+
 
 def parse_json(raw: str) -> list:
     raw = raw.strip()
@@ -140,20 +238,28 @@ def parse_json(raw: str) -> list:
         raise ValueError(f"No JSON array in response: {raw[:200]}")
     return json.loads(raw[start:end])
 
-def validate_scripts(scripts: list) -> list:
+
+def validate_scripts(scripts: list, length_mode: str) -> list:
     fixed = []
     for s in scripts:
         full_text = f"{s.get('hook','')} {s.get('body','')} {s.get('cta','')}"
         word_count = len(full_text.split())
-        log.info(f"Script '{s.get('title','?')}' — {word_count} words — animal: {s.get('animal_keyword','?')}")
 
-        if word_count < 55:
+        if length_mode == "short":
+            min_words, max_words = 32, 48
+        else:
+            min_words, max_words = 155, 195
+
+        log.info(f"Script '{s.get('title','?')}' — {word_count} words — mode: {length_mode}")
+
+        if word_count < min_words:
             log.warning(f"Too short ({word_count} words) — padding")
             s['body'] = s.get('body', '') + " Scientists are still figuring out how this is even possible."
-        elif word_count > 80:
+        elif word_count > max_words:
             log.warning(f"Too long ({word_count} words) — trimming")
             body_words = s.get('body', '').split()
-            s['body'] = " ".join(body_words[:45])
+            trim_to = 100 if length_mode == "long" else 25
+            s['body'] = " ".join(body_words[:trim_to])
 
         if not s.get('shock_word'):
             s['shock_word'] = 'WAIT'
@@ -167,8 +273,24 @@ def validate_scripts(scripts: list) -> list:
             animal = s.get('animal_keyword', 'this animal')
             s['loop_hook'] = f"Rewatch the part about the {animal}. Still insane."
 
+        if not s.get('pinned_comment'):
+            animal = s.get('animal_keyword', 'this animal')
+            s['pinned_comment'] = f"Could you survive 60 seconds with a {animal}? Be honest."
+
+        if not s.get('seo_tags'):
+            animal = s.get('animal_keyword', 'animal').lower().replace(' ', '')
+            s['seo_tags'] = [f"#{animal}", "#wildlife", "#nature", "#animalkingdom", "#wildanimals"]
+
+        if not s.get('hook_type'):
+            s['hook_type'] = 'wrong_fact'
+
+        if not s.get('cta_type'):
+            s['cta_type'] = 'B'
+
+        s['length_mode'] = length_mode
         fixed.append(s)
     return fixed
+
 
 async def _try_groq(prompt: str) -> list:
     headers = {
@@ -178,8 +300,8 @@ async def _try_groq(prompt: str) -> list:
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.88,   # Slightly higher = more creative hooks
-        "max_tokens": 3000,
+        "temperature": 0.88,
+        "max_tokens": 4000,
     }
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(GROQ_URL, headers=headers, json=body)
@@ -189,11 +311,12 @@ async def _try_groq(prompt: str) -> list:
     raw = resp.json()["choices"][0]["message"]["content"]
     return parse_json(raw)
 
+
 async def _try_gemini(prompt: str) -> list:
     url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.88, "maxOutputTokens": 3000}
+        "generationConfig": {"temperature": 0.88, "maxOutputTokens": 4000}
     }
     for attempt in range(3):
         async with httpx.AsyncClient(timeout=60) as client:
@@ -208,6 +331,7 @@ async def _try_gemini(prompt: str) -> list:
         return parse_json(raw)
     raise RuntimeError("Gemini quota exhausted")
 
+
 async def generate_scripts(count: int = 1) -> list[dict]:
     if not GROQ_API_KEY and not GEMINI_API_KEY:
         raise ValueError(
@@ -216,12 +340,14 @@ async def generate_scripts(count: int = 1) -> list[dict]:
         )
 
     subniche = get_todays_subniche()
+    length_mode = get_length_mode()
     log.info(f"Sub-niche this slot: {subniche}")
+    log.info(f"Length mode: {length_mode} ({'13s' if length_mode == 'short' else '55-60s'})")
 
     used_animals = get_used_animals()
     log.info(f"Animals used so far: {len(used_animals)} — {used_animals[-5:] if used_animals else 'none yet'}")
 
-    prompt = build_prompt(count, subniche, used_animals)
+    prompt = build_prompt(count, subniche, used_animals, length_mode)
 
     scripts = None
 
@@ -241,7 +367,7 @@ async def generate_scripts(count: int = 1) -> list[dict]:
     if scripts is None:
         raise RuntimeError("All AI providers failed. Check your API keys.")
 
-    scripts = validate_scripts(scripts)
+    scripts = validate_scripts(scripts, length_mode)
 
     new_animals = [s.get("animal_keyword", "").lower().strip() for s in scripts if s.get("animal_keyword")]
     mark_animals_used(new_animals)
