@@ -1,8 +1,14 @@
 """
 Script Generator — uses Groq API (100% FREE).
-Produces 28-32 second scripts (70-80 words).
-Shorter = higher completion rate = algorithm pushes harder.
-Tracks used animals and never repeats them.
+Produces 25-30 second scripts (65-75 words).
+
+VIRAL UPGRADES (based on 2025/26 YouTube Shorts algorithm research):
+- Shorter = higher completion rate. 25-30s > 32s every time.
+- Loop-bait ending that makes the video feel seamless to replay
+- Share-bait CTA: "send this to someone who needs to see it" drives shares
+  (shares are the strongest viral signal per YouTube's own data)
+- Engaged Views are what matter now (not raw views) — so hook must stop the swipe
+- Punctuation cues added to script output so TTS sounds more human
 """
 
 import os, json, asyncio, httpx, logging
@@ -31,62 +37,96 @@ SUBNICHES = [
 ]
 
 def get_todays_subniche() -> str:
-    # Changes every 6 hours — so each of the 4 daily uploads gets a fresh niche
     now = datetime.now()
-    hour_slot = now.hour // 6  # 0, 1, 2, or 3
+    hour_slot = now.hour // 6
     index = (now.timetuple().tm_yday * 4 + hour_slot) % len(SUBNICHES)
     return SUBNICHES[index]
 
 def build_prompt(count: int, subniche: str, used_animals: list[str]) -> str:
     exclusion = build_exclusion_prompt(used_animals)
-    return f"""You are a viral YouTube Shorts writer with the humor of a stand-up comedian and the knowledge of a wildlife documentary. Generate {count} scripts about: "{subniche}"
+    return f"""You are a viral YouTube Shorts writer. You write like a hyped-up friend texting wild animal facts — casual, punchy, zero fluff. Generate {count} scripts about: "{subniche}"
 {exclusion}
 
-TARGET: 70-80 words total per script. 28-32 seconds spoken aloud. ZERO FLUFF.
-Shorter = higher completion rate = algorithm pushes harder. Every word must earn its place.
+═══════════════════════════════════════
+TARGET: 65-75 words TOTAL per script. 25-30 seconds spoken aloud.
+SHORTER = BETTER. Every extra word is a viewer lost.
+═══════════════════════════════════════
 
-COMEDY RULES (non-negotiable):
-- Write like you are texting your funniest friend, not reading a textbook
-- Use casual language: "this thing", "absolutely unhinged", "for no reason", "built different"
-- Add ONE funny comparison (e.g. "that is like a human punching through a concrete wall")
-- Include a WAIT FOR IT beat before the craziest fact
-- The hook must cause physical discomfort to skip
+CRITICAL 2025 ALGORITHM FACTS (write around these):
+1. COMPLETION RATE is king — if they watch to the end, you win. Keep it SHORT.
+2. SHARES are the #1 viral signal — write something people HAVE to send to a friend
+3. REPLAYS boost rank dramatically — make the ending loop back to the hook naturally
+4. ENGAGED VIEWS > raw views — the hook must physically stop someone from swiping
 
-Hook styles (rotate through these):
-1. Fake-out: Start with something that sounds wrong, then confirm it is true
-2. Scale shock: Compare the animal ability to something humans can relate to
-3. Chaos opener: Lead with the wildest fact as if it is totally normal
-4. Vs battle: "This animal vs something 10x bigger and it wins every time"
+PUNCTUATION RULES (non-negotiable — TTS voice uses these for natural pauses):
+- Use "..." before the craziest reveal — forces a dramatic pause
+- Use "—" for mid-sentence pivots and emphasis
+- Use "!" for energy peaks — but max 2 per script
+- Never end a sentence flatly if it can end with a punch
+
+HOOK FORMULA (first 2 seconds decides everything):
+Pick ONE of these proven formats:
+1. WRONG FACT OPENER: Start with something that sounds impossible, then confirm it's real
+2. SCALE SHOCK: "This [animal] can [action] — that's like a human [relatable comparison]"
+3. VS BATTLE: "[Animal] vs [thing 10x bigger]. It wins. Every. Single. Time."
+4. CHAOS NORMAL: State the most insane fact as if it's totally boring news
+
+BODY RULES:
+- ONE punchy comparison (make it relatable to everyday life)
+- ONE "... wait for it ..." beat before the hardest-hitting fact
+- Casual vocab: "this thing", "absolutely unhinged", "for no reason", "built different", "no, seriously"
+- Real numbers only — made-up stats kill trust and shares
+
+CTA STRATEGY (pick one per script, rotate):
+TYPE A — DEBATE BAIT (forces comments): "Comment [X] or [Y]. No in between."
+TYPE B — SHARE BAIT (forces shares — strongest viral signal): "Send this to someone who'd never believe it."
+TYPE C — CHALLENGE (forces comments + shares): "Name ONE animal tougher than this. I'll wait."
+TYPE D — WRONG ANSWERS (high comment volume): "Wrong answers only — what would you do against this thing?"
+
+LOOP HOOK STRATEGY:
+The loop_hook shows in the LAST 3 SECONDS. It must:
+- Reference something specific from the video (not generic)
+- Make viewer feel they "missed something" → triggers replay
+- Examples: "Wait... did you catch HOW FAST it actually is?"
+            "Rewatch the part about the punch. It doesn't make sense."
+            "The comparison at the start is even crazier now, right?"
 
 Respond ONLY with valid JSON array. No markdown. Start with [
 
 [
   {{
-    "title": "Catchy title under 60 chars, make it sound unhinged #Shorts",
-    "animal_keyword": "single animal name for video search",
-    "hook": "1-2 sentences. MUST be shocking or funny. 15-20 words. No hedging.",
-    "body": "2-3 sentences. Include ONE funny comparison. Use casual tone. Include a WAIT FOR IT beat before the craziest fact. 45-50 words.",
-    "cta": "Debate-bait CTA that forces a comment. Use one of these formats: (1) 'Comment [X] or [Y] — no in between.' (2) 'Wrong answers only: what would YOU do against this thing?' (3) 'Name an animal that could beat this. I will wait.' 8-12 words max.",
-    "tags": ["#Shorts", "#AnimalFacts", "#Wildlife", "#Animals"],
+    "title": "Unhinged title under 55 chars — sounds impossible but true #Shorts",
+    "animal_keyword": "single animal name for Pexels video search",
+    "hook": "1-2 sentences. STOPS the swipe. 12-18 words. Uses punctuation for drama.",
+    "body": "2-3 sentences. ONE comparison. ONE '... wait for it ...' beat. 42-48 words. Conversational.",
+    "cta": "One of TYPE A/B/C/D above. 8-12 words MAX. No generic 'follow for more'.",
+    "tags": ["#Shorts", "#AnimalFacts", "#Wildlife", "#Animals", "#Facts"],
     "emoji": "most chaotic relevant emoji",
-    "shock_word": "ONE all-caps word for giant text overlay at hook peak e.g. IMPOSSIBLE or INSANE or WAIT",
-    "loop_hook": "One 5-8 word phrase shown at the END of video to trigger replay. Example: 'Wait... did you catch that part?' or 'Rewatch the part about the punch'"
+    "shock_word": "ONE all-caps word for giant overlay e.g. IMPOSSIBLE / INSANE / WAIT / NOPE / WILD",
+    "loop_hook": "6-9 words referencing a SPECIFIC moment in THIS video to bait replay"
   }}
 ]
 
-TONE EXAMPLES (copy this energy):
-BAD: "The mantis shrimp has a powerful punch that scientists have studied."
-GOOD: "This shrimp punches so fast it literally boils the water around its fist. Yes, really."
+TONE CALIBRATION — copy this energy exactly:
 
-BAD: "Follow for more animal facts!"
-GOOD: "Name an animal tougher than this. I'll wait."
+BAD hook: "The mantis shrimp has a very powerful punch that scientists have studied."
+GOOD hook: "This shrimp punches so fast... it literally boils the water. Yes. Really."
 
-Rules:
-- hook + body + cta = 70-80 words STRICTLY
-- Every animal different from each other
-- ALL facts must be 100 percent accurate with real numbers
-- Conversational, sounds natural when read aloud fast
-- No visual references, audio only"""
+BAD body: "The pistol shrimp creates a cavitation bubble when it snaps its claw."
+GOOD body: "It snaps its claw and the shockwave hits 218 decibels — that's louder than a gunshot. A shrimp. Louder than a gun."
+
+BAD CTA: "Follow for more amazing animal facts every day!"
+GOOD CTA: "Send this to someone who needs to know shrimp are terrifying."
+
+BAD loop_hook: "Watch this video again for more facts."
+GOOD loop_hook: "Rewatch the decibel number. It still doesn't make sense."
+
+FINAL RULES:
+- hook + body + cta = 65-75 words STRICTLY
+- Every animal must be different from others in this batch
+- ALL facts must be 100% accurate with real numbers — fact errors destroy share rate
+- Reads naturally when spoken fast — no tongue-twisters, no awkward phrasing
+- No visual references ("as you can see") — audio only"""
 
 def parse_json(raw: str) -> list:
     raw = raw.strip()
@@ -107,25 +147,25 @@ def validate_scripts(scripts: list) -> list:
         word_count = len(full_text.split())
         log.info(f"Script '{s.get('title','?')}' — {word_count} words — animal: {s.get('animal_keyword','?')}")
 
-        # Updated thresholds: target is 70-80 words
-        if word_count < 60:
+        if word_count < 55:
             log.warning(f"Too short ({word_count} words) — padding")
-            s['body'] = s.get('body', '') + (
-                " Scientists continue to study this amazing creature every year."
-            )
-        elif word_count > 85:
+            s['body'] = s.get('body', '') + " Scientists are still figuring out how this is even possible."
+        elif word_count > 80:
             log.warning(f"Too long ({word_count} words) — trimming")
             body_words = s.get('body', '').split()
-            s['body'] = " ".join(body_words[:48])
+            s['body'] = " ".join(body_words[:45])
 
-        # Ensure shock_word exists
         if not s.get('shock_word'):
             s['shock_word'] = 'WAIT'
 
-        # Ensure loop_hook exists
         if not s.get('loop_hook'):
+            s['loop_hook'] = "Wait... did you catch that detail?"
+
+        # Ensure loop_hook is specific, not generic
+        generic_hooks = ["watch again", "watch this again", "watch more", "see more"]
+        if any(g in s.get('loop_hook', '').lower() for g in generic_hooks):
             animal = s.get('animal_keyword', 'this animal')
-            s['loop_hook'] = f"Wait... did you catch that part?"
+            s['loop_hook'] = f"Rewatch the part about the {animal}. Still insane."
 
         fixed.append(s)
     return fixed
@@ -138,7 +178,7 @@ async def _try_groq(prompt: str) -> list:
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.85,
+        "temperature": 0.88,   # Slightly higher = more creative hooks
         "max_tokens": 3000,
     }
     async with httpx.AsyncClient(timeout=60) as client:
@@ -153,7 +193,7 @@ async def _try_gemini(prompt: str) -> list:
     url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.85, "maxOutputTokens": 3000}
+        "generationConfig": {"temperature": 0.88, "maxOutputTokens": 3000}
     }
     for attempt in range(3):
         async with httpx.AsyncClient(timeout=60) as client:
