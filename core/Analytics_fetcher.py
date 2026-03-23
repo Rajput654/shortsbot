@@ -1,14 +1,17 @@
 """
-Analytics Fetcher — pulls view/like/comment counts from YouTube 48 hours
-after upload and writes them to performance_log.json.
+Analytics Fetcher — pulls view/like/comment/engaged-view counts from YouTube
+48 hours after upload and writes them to performance_log.json.
 
-This feeds back into script_generator.py so the AI learns which hook styles,
-CTA types, and animals perform best on YOUR specific channel.
+UPDATES v2:
+- engagedViewCount is now the PRIMARY optimization signal (not viewCount).
+  Since March 2025, YouTube's algorithm rewards engaged views — watch sessions
+  where the viewer was active — not raw loops. This is what script_generator.py
+  uses to decide which hook/CTA styles to replicate or avoid.
+- engaged_view_rate calculated as engagedViewCount / impressions (not likes/views)
+- performance_log.json schema updated with engaged_views field
+- script_generator feedback prompt updated to surface engaged_view_rate
 
-Run automatically by the main pipeline after a 48h delay, OR run manually:
-    python -m core.analytics_fetcher
-
-performance_log.json schema:
+performance_log.json schema (v2):
 {
   "videos": [
     {
@@ -21,9 +24,11 @@ performance_log.json schema:
       "upload_date": "2026-03-22 15:11",
       "fetched_date": "2026-03-24 15:11",
       "views": 45230,
+      "engaged_views": 38100,
       "likes": 1820,
       "comments": 342,
-      "engaged_view_rate": 0.04
+      "engaged_view_rate": 0.842,
+      "like_rate": 0.040
     }
   ],
   "last_updated": "2026-03-24 15:11"
@@ -58,7 +63,6 @@ def _save_log(data: dict):
 
 
 def _load_queue() -> list:
-    """Load the upload queue — videos waiting for analytics fetch."""
     if os.path.exists(UPLOAD_QUEUE):
         try:
             with open(UPLOAD_QUEUE, "r") as f:
@@ -74,10 +78,7 @@ def _save_queue(queue: list):
 
 
 def add_to_upload_queue(video_id: str, script: dict):
-    """
-    Called immediately after upload to register the video for future analytics fetch.
-    Stores metadata from the script so we can correlate performance with strategy.
-    """
+    """Called immediately after upload to register for future analytics fetch."""
     queue = _load_queue()
     entry = {
         "video_id": video_id,
@@ -96,8 +97,8 @@ def add_to_upload_queue(video_id: str, script: dict):
 
 def fetch_analytics_for_ready_videos():
     """
-    Check upload queue for videos that are 48h+ old and fetch their analytics.
-    Called at the start of each pipeline run.
+    Check upload queue for videos 48h+ old and fetch their analytics.
+    Uses engagedViewCount as primary KPI alongside raw views.
     """
     queue = _load_queue()
     if not queue:
@@ -134,10 +135,16 @@ def fetch_analytics_for_ready_videos():
     for entry in ready:
         vid_id = entry["video_id"]
         stats = fetched.get(vid_id, {})
+
         views = int(stats.get("viewCount", 0))
+        engaged_views = int(stats.get("engagedViewCount", 0))
         likes = int(stats.get("likeCount", 0))
         comments = int(stats.get("commentCount", 0))
-        engaged_rate = round(likes / max(views, 1), 4)
+
+        # Primary signal: what % of raw views were engaged views
+        engaged_view_rate = round(engaged_views / max(views, 1), 4)
+        # Secondary: like rate (likes per view)
+        like_rate = round(likes / max(views, 1), 4)
 
         record = {
             "video_id": vid_id,
@@ -149,27 +156,32 @@ def fetch_analytics_for_ready_videos():
             "upload_date": entry.get("upload_date", ""),
             "fetched_date": now.strftime("%Y-%m-%d %H:%M"),
             "views": views,
+            "engaged_views": engaged_views,
             "likes": likes,
             "comments": comments,
-            "engaged_view_rate": engaged_rate
+            "engaged_view_rate": engaged_view_rate,
+            "like_rate": like_rate,
         }
 
         perf_log["videos"].append(record)
         log.info(
             f"Analytics logged: {entry.get('title','?')} | "
-            f"{views:,} views | {likes:,} likes | {comments:,} comments"
+            f"{views:,} views | {engaged_views:,} engaged | "
+            f"EVR: {engaged_view_rate:.1%} | {likes:,} likes"
         )
 
     _save_log(perf_log)
-
-    # Remove fetched videos from queue
     _save_queue(still_waiting)
     log.info(f"Analytics fetch complete. {len(still_waiting)} videos still pending.")
 
 
 def _fetch_from_youtube(video_ids: list[str]) -> dict:
-    """Fetch stats for a list of video IDs. Returns {video_id: stats_dict}."""
-    import json as _json
+    """
+    Fetch stats for a list of video IDs.
+    Requests both 'statistics' and 'contentDetails' parts.
+    engagedViewCount is in statistics since YouTube API v3 March 2025 update.
+    Returns {video_id: stats_dict}.
+    """
     from googleapiclient.discovery import build
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -178,7 +190,7 @@ def _fetch_from_youtube(video_ids: list[str]) -> dict:
     if not creds_json:
         raise ValueError("YT_CREDENTIALS not set")
 
-    creds_data = _json.loads(creds_json)
+    creds_data = json.loads(creds_json)
     creds = Credentials(
         token=creds_data.get("token"),
         refresh_token=creds_data["refresh_token"],
@@ -192,7 +204,6 @@ def _fetch_from_youtube(video_ids: list[str]) -> dict:
 
     youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
 
-    # Batch in groups of 50 (YouTube API limit)
     results = {}
     for i in range(0, len(video_ids), 50):
         batch = video_ids[i:i+50]
@@ -217,13 +228,16 @@ def get_performance_summary() -> str:
 
     total = len(videos)
     views_list = [v.get("views", 0) for v in videos]
+    evr_list = [v.get("engaged_view_rate", 0) for v in videos if v.get("engaged_view_rate", 0) > 0]
     avg_views = sum(views_list) / max(total, 1)
-    best = max(videos, key=lambda v: v.get("views", 0))
+    avg_evr = sum(evr_list) / max(len(evr_list), 1)
+    best = max(videos, key=lambda v: v.get("engaged_views", v.get("views", 0)))
 
     return (
-        f"Performance summary: {total} videos tracked | "
+        f"Performance: {total} videos | "
         f"Avg views: {avg_views:,.0f} | "
-        f"Best: '{best.get('title','?')}' ({best.get('views',0):,} views)"
+        f"Avg engaged view rate: {avg_evr:.1%} | "
+        f"Best: '{best.get('title','?')}' ({best.get('engaged_views', best.get('views',0)):,} engaged views)"
     )
 
 
