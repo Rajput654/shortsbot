@@ -17,14 +17,16 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 SUBNICHES = [
-    "Dangerous animals and their deadly abilities",
-    "Unusual and bizarre animal facts",
-    "Animal size comparisons and record breakers",
-    "Deep sea creatures and ocean mysteries",
-    "Animal superpowers and extraordinary abilities",
-    "Smartest animals and their intelligence",
-    "Extinct animals and prehistoric creatures",
-    "Baby animals and how they survive",
+    "Animals with abilities so ridiculous they sound made up",
+    "Animals that would absolutely destroy humans in a fight",
+    "Deep sea creatures that look like nightmares",
+    "Animals with superpowers that make humans look pathetic",
+    "Animal world records so extreme they break your brain",
+    "Animals that cheat death in the most insane ways",
+    "Baby animals that are secretly terrifying killers",
+    "Animals that are way smarter than your average human",
+    "Prehistoric monsters that make T-Rex look cute",
+    "Animals that science still cannot explain",
 ]
 
 def get_todays_subniche() -> str:
@@ -33,37 +35,52 @@ def get_todays_subniche() -> str:
 
 def build_prompt(count: int, subniche: str, used_animals: list[str]) -> str:
     exclusion = build_exclusion_prompt(used_animals)
-    return f"""You are an expert YouTube Shorts scriptwriter. Generate {count} unique viral scripts about: "{subniche}"
+    return f"""You are a viral YouTube Shorts writer with the humor of a stand-up comedian and the knowledge of a wildlife documentary. Generate {count} scripts about: "{subniche}"
 {exclusion}
 
-CRITICAL: Each script MUST be exactly 90-100 words total. This equals 35-40 seconds when spoken aloud.
+TARGET: 90-100 words total per script. 35-40 seconds spoken aloud. ZERO FLUFF.
 
-Hook styles (use one per script, all different):
-1. Did you know — counterintuitive opening fact
-2. Shocking comparison — compare to something familiar
-3. Mystery — something unexpected
-4. vs battle — animal vs animal
+COMEDY RULES (non-negotiable):
+- Write like you are texting your funniest friend, not reading a textbook
+- Use casual language: "this thing", "absolutely unhinged", "for no reason", "built different"
+- Add ONE funny comparison (e.g. "that is like a human punching through a concrete wall")
+- Include a WAIT FOR IT beat before the craziest fact
+- The hook must cause physical discomfort to skip
 
-Respond ONLY with a valid JSON array. No markdown. No backticks. Start directly with [
+Hook styles (rotate through these):
+1. Fake-out: Start with something that sounds wrong, then confirm it is true
+2. Scale shock: Compare the animal ability to something humans can relate to
+3. Chaos opener: Lead with the wildest fact as if it is totally normal
+4. Vs battle: "This animal vs something 10x bigger and it wins every time"
+
+Respond ONLY with valid JSON array. No markdown. Start with [
 
 [
   {{
-    "title": "Catchy YouTube title max 60 chars ending with #Shorts",
-    "animal_keyword": "one single animal name for video search e.g. shark",
-    "hook": "1-2 shocking opening sentences. Exactly 20-25 words.",
-    "body": "3-4 sentences of amazing verified facts with specific numbers. Exactly 55-65 words.",
-    "cta": "1 sentence asking viewer to follow or comment. Exactly 10-15 words.",
+    "title": "Catchy title under 60 chars, make it sound unhinged #Shorts",
+    "animal_keyword": "single animal name for video search",
+    "hook": "1-2 sentences. MUST be shocking or funny. 20-25 words. No hedging.",
+    "body": "3-4 sentences. Include ONE funny comparison. Use casual tone. Include a WAIT FOR IT beat before the craziest fact. 55-65 words.",
+    "cta": "Funny CTA, NOT just follow for more. Make it specific. 10-15 words.",
     "tags": ["#Shorts", "#AnimalFacts", "#Wildlife", "#Animals"],
-    "emoji": "one relevant emoji"
+    "emoji": "most chaotic relevant emoji",
+    "shock_word": "ONE all-caps word for giant text overlay at hook peak e.g. IMPOSSIBLE or INSANE or WAIT"
   }}
 ]
 
-Strict rules:
-- hook + body + cta = exactly 90 to 100 words total
-- Every animal in this batch must be different from each other
-- All facts must be 100 percent accurate with real numbers
-- Conversational tone easy to understand when heard
-- No visual references — audio narration only"""
+TONE EXAMPLES (copy this energy):
+BAD: "The mantis shrimp has a powerful punch that scientists have studied."
+GOOD: "This shrimp punches so fast it literally boils the water around its fist. Yes, really."
+
+BAD: "Follow for more animal facts!"
+GOOD: "Comment the animal you thought was toughest. You were wrong."
+
+Rules:
+- hook + body + cta = 90-100 words
+- Every animal different from each other
+- ALL facts must be 100 percent accurate with real numbers
+- Conversational, sounds natural when read aloud fast
+- No visual references, audio only"""
 
 def parse_json(raw: str) -> list:
     raw = raw.strip()
@@ -94,6 +111,10 @@ def validate_scripts(scripts: list) -> list:
             log.warning(f"Too long ({word_count} words) — trimming")
             body_words = s.get('body', '').split()
             s['body'] = " ".join(body_words[:60])
+
+        # Ensure shock_word exists
+        if not s.get('shock_word'):
+            s['shock_word'] = 'WAIT'
 
         fixed.append(s)
     return fixed
@@ -146,7 +167,6 @@ async def generate_scripts(count: int = 4) -> list[dict]:
     subniche = get_todays_subniche()
     log.info(f"Sub-niche today: {subniche}")
 
-    # Load already used animals
     used_animals = get_used_animals()
     log.info(f"Animals used so far: {len(used_animals)} — {used_animals[-5:] if used_animals else 'none yet'}")
 
@@ -172,7 +192,6 @@ async def generate_scripts(count: int = 4) -> list[dict]:
 
     scripts = validate_scripts(scripts)
 
-    # Mark these animals as used immediately
     new_animals = [s.get("animal_keyword", "").lower().strip() for s in scripts if s.get("animal_keyword")]
     mark_animals_used(new_animals)
     log.info(f"Marked {len(new_animals)} new animals as used: {new_animals}")
