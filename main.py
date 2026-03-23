@@ -2,9 +2,12 @@
 AnimalShortsBot — Full Automation Pipeline
 
 Flow:
-  1. Generate all 4 scripts
-  2. For each script: build video → upload immediately
+  1. Generate 1 script (each cron run = 1 video)
+  2. Build video → upload immediately
   3. Done
+
+Run 4x daily via separate cron jobs (see daily_shorts.yml).
+Each run = 1 video at a different time for better algorithm spread.
 """
 
 import os, sys, asyncio, logging
@@ -27,7 +30,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
-VIDEOS_PER_DAY = int(os.getenv("VIDEOS_PER_DAY", "4"))
+VIDEOS_PER_DAY = int(os.getenv("VIDEOS_PER_DAY", "1"))
 
 
 def now_ist() -> str:
@@ -71,13 +74,18 @@ async def build_and_upload(script: dict, index: int) -> bool:
 
         # Step 4 — Upload immediately
         log.info(f"[{index+1}] 📤 Uploading now...")
+
+        # Description optimised for Engaged Views (comments + shares = algorithm signal)
         description = (
             f"{script['hook']}\n\n"
             f"{script['body']}\n\n"
-            f"🔔 Subscribe for daily animal facts!\n\n"
-            f"⚠️ AI-generated voiceover | Footage: Pexels free license\n\n"
+            f"💬 {script.get('cta', 'Drop your answer in the comments!')}\n\n"
+            f"📲 Share this with someone who'd never believe it\n\n"
+            f"🔔 Subscribe — new wild animal fact every day\n\n"
+            f"⚠️ AI-generated voiceover | Footage: Pexels (free commercial license)\n\n"
             f"{' '.join(script.get('tags', []))}"
         )
+
         video_id = await upload_to_youtube(
             video_path=video_path,
             title=script["title"],
@@ -96,20 +104,17 @@ async def main():
     log.info("🤖 AnimalShortsBot starting...")
     log.info(f"📅 {now_ist()}")
 
-    # Generate all scripts
+    # Each cron run generates and uploads 1 video
     log.info(f"\n{'━'*45}")
-    log.info(f"🧠 Generating {VIDEOS_PER_DAY} scripts...")
+    log.info(f"🧠 Generating {VIDEOS_PER_DAY} script(s)...")
     log.info(f"{'━'*45}")
     scripts = await generate_scripts(count=VIDEOS_PER_DAY)
-    log.info(f"✅ {len(scripts)} scripts ready")
+    log.info(f"✅ {len(scripts)} script(s) ready")
 
-    # Build and upload each video immediately one by one
     results = []
     for i, script in enumerate(scripts):
         success = await build_and_upload(script, i)
         results.append(success)
-        if i < len(scripts) - 1:
-            await asyncio.sleep(5)  # small gap between uploads
 
     # Summary
     passed = sum(results)
