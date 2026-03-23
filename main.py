@@ -2,6 +2,10 @@
 AnimalShortsBot — Full Automation Pipeline
 
 UPDATES:
+- Channel scanner runs at startup: fetches ALL videos from your YouTube channel,
+  extracts animal names from titles, and adds them to used_animals.json.
+  This ensures zero duplicates even if the tracker was reset or videos were
+  uploaded manually.
 - Pinned comment posted after every upload
 - Niche SEO tags included in description and YouTube tags array
 - Analytics fetcher runs at start of each pipeline run (fetches 48h-old videos)
@@ -27,6 +31,7 @@ from core.analytics_fetcher import (
     add_to_upload_queue,
     get_performance_summary
 )
+from core.youtube_scanner import scan_channel_and_update_tracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,7 +146,22 @@ async def main():
     log.info("🤖 AnimalShortsBot starting...")
     log.info(f"📅 {now_ist()}")
 
-    # ── Step 0: Fetch analytics for any videos that are 48h+ old ──────────
+    # ── Step 0a: Scan YouTube channel for existing animal videos ──────────
+    # This syncs used_animals.json with your actual channel content.
+    # Uses a cache so it only re-scans when the channel has new videos.
+    log.info(f"\n{'━'*45}")
+    log.info("🔍 Scanning YouTube channel for existing animals...")
+    log.info(f"{'━'*45}")
+    try:
+        found_on_channel = scan_channel_and_update_tracker()
+        if found_on_channel:
+            log.info(f"✅ Channel scan done — {len(found_on_channel)} animals found on channel")
+        else:
+            log.info("✅ Channel scan done — no videos on channel yet (or scan skipped)")
+    except Exception as e:
+        log.warning(f"Channel scan failed (non-fatal, continuing): {e}")
+
+    # ── Step 0b: Fetch analytics for any videos that are 48h+ old ─────────
     log.info(f"\n{'━'*45}")
     log.info("📊 Checking analytics queue...")
     log.info(f"{'━'*45}")
