@@ -1,6 +1,7 @@
 """
 Script Generator — uses Groq API (100% FREE).
-Produces 35-40 second scripts (90-100 words).
+Produces 28-32 second scripts (70-80 words).
+Shorter = higher completion rate = algorithm pushes harder.
 Tracks used animals and never repeats them.
 """
 
@@ -30,15 +31,19 @@ SUBNICHES = [
 ]
 
 def get_todays_subniche() -> str:
-    day_index = datetime.now().timetuple().tm_yday % len(SUBNICHES)
-    return SUBNICHES[day_index]
+    # Changes every 6 hours — so each of the 4 daily uploads gets a fresh niche
+    now = datetime.now()
+    hour_slot = now.hour // 6  # 0, 1, 2, or 3
+    index = (now.timetuple().tm_yday * 4 + hour_slot) % len(SUBNICHES)
+    return SUBNICHES[index]
 
 def build_prompt(count: int, subniche: str, used_animals: list[str]) -> str:
     exclusion = build_exclusion_prompt(used_animals)
     return f"""You are a viral YouTube Shorts writer with the humor of a stand-up comedian and the knowledge of a wildlife documentary. Generate {count} scripts about: "{subniche}"
 {exclusion}
 
-TARGET: 90-100 words total per script. 35-40 seconds spoken aloud. ZERO FLUFF.
+TARGET: 70-80 words total per script. 28-32 seconds spoken aloud. ZERO FLUFF.
+Shorter = higher completion rate = algorithm pushes harder. Every word must earn its place.
 
 COMEDY RULES (non-negotiable):
 - Write like you are texting your funniest friend, not reading a textbook
@@ -59,12 +64,13 @@ Respond ONLY with valid JSON array. No markdown. Start with [
   {{
     "title": "Catchy title under 60 chars, make it sound unhinged #Shorts",
     "animal_keyword": "single animal name for video search",
-    "hook": "1-2 sentences. MUST be shocking or funny. 20-25 words. No hedging.",
-    "body": "3-4 sentences. Include ONE funny comparison. Use casual tone. Include a WAIT FOR IT beat before the craziest fact. 55-65 words.",
-    "cta": "Funny CTA, NOT just follow for more. Make it specific. 10-15 words.",
+    "hook": "1-2 sentences. MUST be shocking or funny. 15-20 words. No hedging.",
+    "body": "2-3 sentences. Include ONE funny comparison. Use casual tone. Include a WAIT FOR IT beat before the craziest fact. 45-50 words.",
+    "cta": "Debate-bait CTA that forces a comment. Use one of these formats: (1) 'Comment [X] or [Y] — no in between.' (2) 'Wrong answers only: what would YOU do against this thing?' (3) 'Name an animal that could beat this. I will wait.' 8-12 words max.",
     "tags": ["#Shorts", "#AnimalFacts", "#Wildlife", "#Animals"],
     "emoji": "most chaotic relevant emoji",
-    "shock_word": "ONE all-caps word for giant text overlay at hook peak e.g. IMPOSSIBLE or INSANE or WAIT"
+    "shock_word": "ONE all-caps word for giant text overlay at hook peak e.g. IMPOSSIBLE or INSANE or WAIT",
+    "loop_hook": "One 5-8 word phrase shown at the END of video to trigger replay. Example: 'Wait... did you catch that part?' or 'Rewatch the part about the punch'"
   }}
 ]
 
@@ -73,10 +79,10 @@ BAD: "The mantis shrimp has a powerful punch that scientists have studied."
 GOOD: "This shrimp punches so fast it literally boils the water around its fist. Yes, really."
 
 BAD: "Follow for more animal facts!"
-GOOD: "Comment the animal you thought was toughest. You were wrong."
+GOOD: "Name an animal tougher than this. I'll wait."
 
 Rules:
-- hook + body + cta = 90-100 words
+- hook + body + cta = 70-80 words STRICTLY
 - Every animal different from each other
 - ALL facts must be 100 percent accurate with real numbers
 - Conversational, sounds natural when read aloud fast
@@ -101,20 +107,25 @@ def validate_scripts(scripts: list) -> list:
         word_count = len(full_text.split())
         log.info(f"Script '{s.get('title','?')}' — {word_count} words — animal: {s.get('animal_keyword','?')}")
 
-        if word_count < 80:
+        # Updated thresholds: target is 70-80 words
+        if word_count < 60:
             log.warning(f"Too short ({word_count} words) — padding")
             s['body'] = s.get('body', '') + (
                 " Scientists continue to study this amazing creature every year."
-                " Each new discovery reveals just how extraordinary nature truly is."
             )
-        elif word_count > 115:
+        elif word_count > 85:
             log.warning(f"Too long ({word_count} words) — trimming")
             body_words = s.get('body', '').split()
-            s['body'] = " ".join(body_words[:60])
+            s['body'] = " ".join(body_words[:48])
 
         # Ensure shock_word exists
         if not s.get('shock_word'):
             s['shock_word'] = 'WAIT'
+
+        # Ensure loop_hook exists
+        if not s.get('loop_hook'):
+            animal = s.get('animal_keyword', 'this animal')
+            s['loop_hook'] = f"Wait... did you catch that part?"
 
         fixed.append(s)
     return fixed
@@ -157,7 +168,7 @@ async def _try_gemini(prompt: str) -> list:
         return parse_json(raw)
     raise RuntimeError("Gemini quota exhausted")
 
-async def generate_scripts(count: int = 4) -> list[dict]:
+async def generate_scripts(count: int = 1) -> list[dict]:
     if not GROQ_API_KEY and not GEMINI_API_KEY:
         raise ValueError(
             "No API key found!\n"
@@ -165,7 +176,7 @@ async def generate_scripts(count: int = 4) -> list[dict]:
         )
 
     subniche = get_todays_subniche()
-    log.info(f"Sub-niche today: {subniche}")
+    log.info(f"Sub-niche this slot: {subniche}")
 
     used_animals = get_used_animals()
     log.info(f"Animals used so far: {len(used_animals)} — {used_animals[-5:] if used_animals else 'none yet'}")
