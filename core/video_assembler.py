@@ -1,6 +1,6 @@
 """
 Video Assembler — combines footage, voiceover, captions, and music.
-Fixed: footage guaranteed to cover full audio duration using stream_loop.
+Upgraded: word-by-word yellow captions, giant shock-word overlay, CRF 20 quality.
 """
 
 import os, asyncio, logging, math, json
@@ -35,7 +35,6 @@ async def assemble_video(
     duration = await get_audio_duration(audio_path)
     log.info(f"Audio duration: {duration:.1f}s")
 
-    # Build footage video that exactly matches audio duration
     concat_path = os.path.join(tmp_dir, "footage.mp4")
     await _build_footage(footage_paths, duration, concat_path, tmp_dir)
 
@@ -85,12 +84,10 @@ async def _build_footage(
 ):
     """
     Build footage video that fills exactly target_duration seconds.
-    Uses concat with enough repetitions + trims to exact length.
     """
     if not footage_paths:
         raise ValueError("No footage paths")
 
-    # Measure each clip
     durations = []
     for p in footage_paths:
         d = await _get_duration(p)
@@ -99,13 +96,11 @@ async def _build_footage(
     total = sum(durations)
     log.info(f"Total footage: {total:.1f}s, need: {target_duration:.1f}s")
 
-    # Build concat list with enough repetitions
     concat_file = os.path.join(tmp_dir, "concat.txt")
     lines = []
     accumulated = 0.0
     idx = 0
 
-    # Keep adding clips until we have target_duration + 10s buffer
     while accumulated < target_duration + 10:
         clip = footage_paths[idx % len(footage_paths)]
         dur = durations[idx % len(durations)]
@@ -113,7 +108,7 @@ async def _build_footage(
         lines.append(f"file '{safe}'")
         accumulated += dur
         idx += 1
-        if idx > 200:  # hard safety limit
+        if idx > 200:
             break
 
     log.info(f"Concat: {len(lines)} clip entries = {accumulated:.1f}s")
@@ -121,7 +116,6 @@ async def _build_footage(
     with open(concat_file, "w") as f:
         f.write("\n".join(lines))
 
-    # Single FFmpeg pass: concat + scale to 9:16 + trim to exact duration
     cmd = [
         FFMPEG, "-y",
         "-f", "concat", "-safe", "0",
@@ -135,16 +129,15 @@ async def _build_footage(
         ),
         "-t", str(target_duration),
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
+        "-preset", "fast",      # was ultrafast — sharper output
+        "-crf", "20",           # was 28 — much higher quality
         "-pix_fmt", "yuv420p",
-        "-threads", "2",
+        "-threads", "4",        # was 2
         "-an",
         output
     ]
     await _run_ffmpeg(cmd, "footage build")
 
-    # Verify
     actual = await _get_duration(output)
     log.info(f"Footage video: {actual:.1f}s (target {target_duration:.1f}s) ✓")
 
@@ -175,8 +168,8 @@ async def _ffmpeg_assemble(
             "-map", "[vout]",
             "-map", "[aout]",
             "-t", str(duration),
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-            "-threads", "2",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-threads", "4",
             "-c:a", "aac", "-b:a", AUDIO_BITRATE,
             "-movflags", "+faststart",
             output_path
@@ -190,8 +183,8 @@ async def _ffmpeg_assemble(
             "-map", "[vout]",
             "-map", "1:a",
             "-t", str(duration),
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-            "-threads", "2",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-threads", "4",
             "-c:a", "aac", "-b:a", AUDIO_BITRATE,
             "-movflags", "+faststart",
             output_path
@@ -201,66 +194,99 @@ async def _ffmpeg_assemble(
 
 
 def _build_caption_filter(script: dict, duration: float) -> str:
+    """
+    Word-by-word pop-in captions styled like MrBeast/viral Shorts.
+    Yellow text, ALL CAPS, chunked into 2-3 word bursts for maximum impact.
+    """
     full_text = f"{script['body']} {script['cta']}"
-    words = full_text.split()
+    words = full_text.upper().split()
 
-    lines = []
-    chunk = []
-    for w in words:
-        chunk.append(w)
-        if len(chunk) >= 5:
-            lines.append(" ".join(chunk))
-            chunk = []
-    if chunk:
-        lines.append(" ".join(chunk))
+    # Chunk into 2-3 word bursts for viral caption style
+    chunks = []
+    i = 0
+    while i < len(words):
+        size = 2 if len(chunks) % 2 == 0 else 3
+        chunk = words[i:i+size]
+        chunks.append(" ".join(chunk))
+        i += size
 
-    if not lines:
+    if not chunks:
         return "null"
 
     start_t = 3.0
     end_t = max(duration - 2.0, start_t + 1)
-    time_per_line = (end_t - start_t) / max(len(lines), 1)
+    time_per_chunk = (end_t - start_t) / max(len(chunks), 1)
 
     font = FONT_PATH if os.path.exists(FONT_PATH) else ""
     font_arg = f":fontfile='{font.replace(chr(92), '/')}'" if font else ""
 
     filters = []
-    for i, line in enumerate(lines):
-        t_start = start_t + i * time_per_line
-        t_end = t_start + time_per_line - 0.2
-        safe = line.replace("'","").replace(":","").replace(",","").replace("\\","")
+    for i, chunk in enumerate(chunks):
+        t_start = start_t + i * time_per_chunk
+        t_end = t_start + time_per_chunk - 0.05  # tight gaps = snappy feel
+        safe = chunk.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
         filters.append(
             f"drawtext=text='{safe}'"
             f"{font_arg}"
-            f":fontsize=52:fontcolor=white"
-            f":borderw=4:bordercolor=black"
-            f":x=(w-text_w)/2:y=h*0.72"
-            f":enable='between(t,{t_start:.1f},{t_end:.1f})'"
+            f":fontsize=68"
+            f":fontcolor=#FFE600"
+            f":borderw=5:bordercolor=black"
+            f":x=(w-text_w)/2:y=h*0.70"
+            f":enable='between(t,{t_start:.2f},{t_end:.2f})'"
         )
 
     return ",".join(filters) if filters else "null"
 
 
 def _build_hook_overlay(script: dict) -> str:
-    hook = script.get("hook", "")[:55]
-    safe = hook.replace("'","").replace(":","").replace(",","").replace("\\","")
+    """
+    Hook text at top (0-3s) + giant SHOCK WORD in centre at peak (3-4.5s).
+    """
+    hook = script.get("hook", "")[:55].upper()
+    safe_hook = hook.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
     font = FONT_PATH if os.path.exists(FONT_PATH) else ""
     font_arg = f":fontfile='{font.replace(chr(92), '/')}'" if font else ""
 
-    return (
-        f"drawtext=text='{safe}'{font_arg}"
-        f":fontsize=40:fontcolor=yellow"
-        f":borderw=4:bordercolor=black"
-        f":x=(w-text_w)/2:y=h*0.08"
+    # Hook text at top for first 3 seconds
+    hook_filter = (
+        f"drawtext=text='{safe_hook}'{font_arg}"
+        f":fontsize=44:fontcolor=white"
+        f":borderw=5:bordercolor=black"
+        f":x=(w-text_w)/2:y=h*0.07"
         f":enable='between(t,0,3)'"
     )
+
+    # Giant red SHOCK WORD slams in at 3 seconds for 1.5 seconds
+    shock_word = script.get("shock_word", "WAIT").upper()[:12]
+    safe_shock = shock_word.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
+    shock_filter = (
+        f"drawtext=text='{safe_shock}'{font_arg}"
+        f":fontsize=120"
+        f":fontcolor=#FF3B30"
+        f":borderw=8:bordercolor=black"
+        f":x=(w-text_w)/2:y=(h-text_h)/2"
+        f":enable='between(t,3.0,4.5)'"
+    )
+
+    # Emoji overlay (top right, shows during hook)
+    emoji = script.get("emoji", "")
+    if emoji:
+        emoji_filter = (
+            f"drawtext=text='{emoji}'"
+            f":fontsize=100"
+            f":x=w*0.75:y=h*0.15"
+            f":enable='between(t,1,4)'"
+        )
+        return f"{hook_filter},{shock_filter},{emoji_filter}"
+
+    return f"{hook_filter},{shock_filter}"
 
 
 def _get_music_track():
     import random
     if not os.path.isdir(MUSIC_DIR):
         return None
-    tracks = [f for f in os.listdir(MUSIC_DIR) if f.endswith((".mp3",".wav",".ogg"))]
+    tracks = [f for f in os.listdir(MUSIC_DIR) if f.endswith((".mp3", ".wav", ".ogg"))]
     if not tracks:
         return None
     return os.path.join(MUSIC_DIR, random.choice(tracks))
