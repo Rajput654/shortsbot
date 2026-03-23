@@ -1,6 +1,6 @@
 """
 Video Assembler — combines footage, voiceover, captions, and music.
-Upgraded: word-by-word yellow captions, giant shock-word overlay, CRF 20 quality.
+Upgraded: word-by-word yellow captions, giant shock-word overlay, loop-hook at end, CRF 20 quality.
 """
 
 import os, asyncio, logging, math, json
@@ -129,10 +129,10 @@ async def _build_footage(
         ),
         "-t", str(target_duration),
         "-c:v", "libx264",
-        "-preset", "fast",      # was ultrafast — sharper output
-        "-crf", "20",           # was 28 — much higher quality
+        "-preset", "fast",
+        "-crf", "20",
         "-pix_fmt", "yuv420p",
-        "-threads", "4",        # was 2
+        "-threads", "4",
         "-an",
         output
     ]
@@ -151,7 +151,7 @@ async def _ffmpeg_assemble(
     output_path: str
 ):
     caption_filter = _build_caption_filter(script, duration)
-    hook_filter = _build_hook_overlay(script)
+    hook_filter = _build_hook_overlay(script, duration)
     vf_filters = f"{caption_filter},{hook_filter}"
 
     if music_path and os.path.exists(music_path):
@@ -197,6 +197,7 @@ def _build_caption_filter(script: dict, duration: float) -> str:
     """
     Word-by-word pop-in captions styled like MrBeast/viral Shorts.
     Yellow text, ALL CAPS, chunked into 2-3 word bursts for maximum impact.
+    Positioned at y=0.65 to leave room for loop hook at bottom.
     """
     full_text = f"{script['body']} {script['cta']}"
     words = full_text.upper().split()
@@ -214,7 +215,7 @@ def _build_caption_filter(script: dict, duration: float) -> str:
         return "null"
 
     start_t = 3.0
-    end_t = max(duration - 2.0, start_t + 1)
+    end_t = max(duration - 4.0, start_t + 1)  # leave 4s for loop hook at end
     time_per_chunk = (end_t - start_t) / max(len(chunks), 1)
 
     font = FONT_PATH if os.path.exists(FONT_PATH) else ""
@@ -231,16 +232,17 @@ def _build_caption_filter(script: dict, duration: float) -> str:
             f":fontsize=68"
             f":fontcolor=#FFE600"
             f":borderw=5:bordercolor=black"
-            f":x=(w-text_w)/2:y=h*0.70"
+            f":x=(w-text_w)/2:y=h*0.65"   # moved up from 0.70 to avoid loop hook overlap
             f":enable='between(t,{t_start:.2f},{t_end:.2f})'"
         )
 
     return ",".join(filters) if filters else "null"
 
 
-def _build_hook_overlay(script: dict) -> str:
+def _build_hook_overlay(script: dict, duration: float) -> str:
     """
-    Hook text at top (0-3s) + giant SHOCK WORD in centre at peak (3-4.5s).
+    Hook text at top (0-3s) + giant SHOCK WORD fires at 2s (during hook, before captions).
+    Loop hook at bottom in final 4 seconds to trigger replays.
     """
     hook = script.get("hook", "")[:55].upper()
     safe_hook = hook.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
@@ -256,7 +258,8 @@ def _build_hook_overlay(script: dict) -> str:
         f":enable='between(t,0,3)'"
     )
 
-    # Giant red SHOCK WORD slams in at 3 seconds for 1.5 seconds
+    # Giant red SHOCK WORD fires at 2s (DURING hook, not when captions start)
+    # This prevents visual collision between shock word and captions
     shock_word = script.get("shock_word", "WAIT").upper()[:12]
     safe_shock = shock_word.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
     shock_filter = (
@@ -265,7 +268,20 @@ def _build_hook_overlay(script: dict) -> str:
         f":fontcolor=#FF3B30"
         f":borderw=8:bordercolor=black"
         f":x=(w-text_w)/2:y=(h-text_h)/2"
-        f":enable='between(t,3.0,4.5)'"
+        f":enable='between(t,2.0,3.5)'"   # was 3.0-4.5 — now fires DURING hook before captions
+    )
+
+    # Loop hook at bottom — shows in final 4 seconds to bait replays
+    loop_hook = script.get("loop_hook", "Wait... did you catch that?").upper()[:40]
+    safe_loop = loop_hook.replace("'", "").replace(":", "").replace(",", "").replace("\\", "")
+    loop_start = max(duration - 4.0, 0.5)
+    loop_end = max(duration - 0.5, 1.0)
+    loop_filter = (
+        f"drawtext=text='{safe_loop}'{font_arg}"
+        f":fontsize=52:fontcolor=white"
+        f":borderw=5:bordercolor=black"
+        f":x=(w-text_w)/2:y=h*0.82"
+        f":enable='between(t,{loop_start:.2f},{loop_end:.2f})'"
     )
 
     # Emoji overlay (top right, shows during hook)
@@ -277,9 +293,9 @@ def _build_hook_overlay(script: dict) -> str:
             f":x=w*0.75:y=h*0.15"
             f":enable='between(t,1,4)'"
         )
-        return f"{hook_filter},{shock_filter},{emoji_filter}"
+        return f"{hook_filter},{shock_filter},{loop_filter},{emoji_filter}"
 
-    return f"{hook_filter},{shock_filter}"
+    return f"{hook_filter},{shock_filter},{loop_filter}"
 
 
 def _get_music_track():
