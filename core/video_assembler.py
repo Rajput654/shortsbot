@@ -1,9 +1,9 @@
 """
 Video Assembler — combines footage, voiceover, captions, and music.
 VIRAL UPDATES: 
-- Podcast Audio Mastering: Bass boost + Compression for 'Authority' voice.
-- Dynamic Punch-in Cuts: Automated camera movement every 4 seconds.
-- Frame-Accurate Sync: 1-word rapid-fire captions.
+- Audio Sidechaining: Music automatically ducks when the voiceover speaks.
+- High-Speed Pacing: Visual resets every 2 seconds to maximize retention.
+- Cinema Polish: Added Vignette and high-bitrate mastering.
 """
 import os, asyncio, logging, json, random
 from pathlib import Path
@@ -27,7 +27,7 @@ async def _build_footage(
 ):
     """
     VIRAL REFINEMENT: Alternating Punch-In / Punch-Out cuts.
-    Resets zoom every 4 seconds to simulate professional cuts.
+    Resets zoom every 2 seconds to maintain extreme visual momentum.
     """
     concat_file = os.path.join(tmp_dir, "concat.txt")
     lines = []
@@ -39,17 +39,18 @@ async def _build_footage(
         clip = footage_paths[idx % len(footage_paths)]
         safe = os.path.abspath(clip).replace("\\", "/")
         lines.append(f"file '{safe}'")
-        accumulated += 8.0 # Estimate per Pexels clip
+        accumulated += 8.0 
         idx += 1
 
     with open(concat_file, "w") as f:
         f.write("\n".join(lines))
 
-    # Corrected Filter: Overscale to 1280p to prevent pixelation during zoom
+    # UPGRADED: 2-second visual reset + Vignette for 'Documentary' feel
     dynamic_cut_filter = (
         f"scale=1280:2276,crop=720:1280," 
-        f"zoompan=z='if(lte(mod(time,4),2), min(zoom+0.0015,1.15), max(zoom-0.0015,1.0))'"
-        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={VIDEO_W}x{VIDEO_H}:fps=30"
+        f"zoompan=z='if(lte(mod(time,2),1), min(zoom+0.002,1.2), max(zoom-0.002,1.0))'"
+        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={VIDEO_W}x{VIDEO_H}:fps=30,"
+        f"vignette=PI/4"
     )
 
     cmd = [
@@ -83,7 +84,7 @@ async def _ffmpeg_assemble(
         f"[va][vb]xfade=transition=fade:duration={xfade_duration}:offset={xfade_offset}[vlooped]"
     )
 
-    # Audio Mastering Chain: Deep Bass + Tight Compression
+    # Audio Mastering: Bass boost + Sidechain Compression (Music ducks for voice)
     voice_mastering = "bass=g=6:f=110,compand=attacks=0:points=-80/-80|-15/-15|0/-10.8|20/-5.2,volume=1.2"
 
     if music_path and os.path.exists(music_path):
@@ -96,8 +97,9 @@ async def _ffmpeg_assemble(
                 f"{loop_filter};"
                 f"[vlooped]{caption_filter}[vout];"
                 f"[1:a]{voice_mastering}[voice];"
-                f"[2:a]volume=0.08,aloop=loop=-1:size=44100[music];"
-                f"[voice][music]amix=inputs=2:duration=first[aout]",
+                f"[2:a]volume=0.1,aloop=loop=-1:size=44100[music_loop];"
+                f"[music_loop][voice]sidechaincompress=threshold=0.15:ratio=20:release=200[music_ducked];"
+                f"[voice][music_ducked]amix=inputs=2:duration=first[aout]",
             "-map", "[vout]", "-map", "[aout]",
             "-t", str(duration),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
@@ -106,5 +108,3 @@ async def _ffmpeg_assemble(
             output_path
         ]
         await _run_ffmpeg(cmd, "final assembly")
-
-# ... (Keep existing helper functions like _run_ffmpeg and _get_duration)
