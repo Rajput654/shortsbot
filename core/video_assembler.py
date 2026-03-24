@@ -11,7 +11,7 @@ from core.tts_engine import get_audio_duration
 from core.caption_sync import group_into_chunks, build_caption_drawtext
 
 # IMPORTANT: Ensure your file is named core/trending_audio.py (all lowercase)
-from core.Trending_audio import get_track_for_script
+from core.trending_audio import get_track_for_script
 
 FFMPEG = os.getenv("FFMPEG_PATH", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE_PATH", "ffprobe")
