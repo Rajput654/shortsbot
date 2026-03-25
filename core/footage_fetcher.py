@@ -10,8 +10,9 @@ UPGRADES v3.0 (rating fixes):
   avoids 1-frame clips and huge downloads that slow the pipeline.
 - CLIP COUNT GUARANTEE: keeps fetching until we have `count` valid clips
   or exhaust all strategies.
-- BETTER QUERY VARIETY: added "extreme close up" and "slow motion" queries
-  for more cinematic B-roll mix.
+
+NICHE UPDATE: Search queries updated from documentary-style to funny/playful
+terms so Pexels returns clips that match the funny animal moments niche.
 """
 
 import os, asyncio, logging, httpx
@@ -27,23 +28,25 @@ MAX_CLIP_DURATION = 30  # seconds — skip overly long clips
 async def fetch_footage(animal: str, count: int = 12, output_dir: str = "output/footage") -> list[str]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    # ── CHANGE: Updated queries from documentary → funny/playful style ─────────
     queries = [
         animal,
-        f"{animal} close up",
-        f"{animal} extreme close up face",
-        f"{animal} natural habitat",
-        f"{animal} slow motion",
+        f"funny {animal}",
+        f"{animal} playing",
+        f"{animal} cute funny",
+        f"{animal} reaction",
     ]
 
+    # Keep predator/giant special cases but add a playful variant too
     predators = ["lion", "shark", "wolf", "tiger", "bear", "crocodile", "eagle", "snake", "wolverine"]
     if any(p in animal.lower() for p in predators):
-        queries.append(f"{animal} hunting attack")
+        queries.append(f"{animal} funny reaction")
     else:
-        queries.append(f"{animal} cute funny playful")
+        queries.append(f"{animal} silly playful")
 
     giants = ["whale", "elephant", "rhino", "hippo"]
     if any(g in animal.lower() for g in giants):
-        queries.append(f"{animal} size comparison")
+        queries.append(f"{animal} cute baby")
 
     log.info(f"Pexels tiered search for: {queries}")
 
@@ -67,8 +70,8 @@ async def fetch_footage(animal: str, count: int = 12, output_dir: str = "output/
 
     # ── Phase 3: generic wildlife safety net ──────────────────────────────
     if len(combined) < count:
-        log.warning(f"Still only {len(combined)} clips — generic wildlife fallback")
-        fallback = await _search_pexels("wildlife nature animal", per_page=count, orientation="portrait")
+        log.warning(f"Still only {len(combined)} clips — generic funny animals fallback")
+        fallback = await _search_pexels("funny cute animals pets", per_page=count, orientation="portrait")
         combined = _dedupe_videos(combined + fallback)
 
     # ── Download ──────────────────────────────────────────────────────────
@@ -146,7 +149,6 @@ def _extract_best_mp4(video_obj: dict) -> str:
     if not files:
         return ""
 
-    # Prefer HD portrait files
     needs_crop = video_obj.get("_needs_crop", False)
     target_quality = "hd"
 
@@ -154,7 +156,6 @@ def _extract_best_mp4(video_obj: dict) -> str:
         if f.get("quality") == target_quality and f.get("link", "").endswith(".mp4"):
             return f["link"]
 
-    # Fall back to any mp4
     for f in files:
         if f.get("link", "").endswith(".mp4"):
             return f["link"]
