@@ -1,14 +1,22 @@
 """
-TTS Engine v3.0 — text-to-speech with word-level timing.
+TTS Engine v3.1 — text-to-speech with word-level timing.
 
-UPGRADES v3.0 (rating fixes):
-- SHOCK_WORD EMPHASIS: inject a dramatic pause before the shock_word and
-  slow its rate slightly so Edge-TTS reads it with natural stress.
-  Edge-TTS doesn't support SSML, but rate/pause tags in SSML-like syntax
-  ARE processed by edge-tts >= 6.1.9 via the communicate rate/pitch params.
-  We instead inject '...' pauses around the shock_word in the text itself.
-- PRE-CTA PAUSE: inject a longer pause (', ...') before the CTA text so
-  the call-to-action lands after a beat, not rushed against the body.
+FIXES v3.1:
+- WORD BOUNDARY EVENT NAME: edge-tts v7.x renamed the event from
+  "WordBoundary" to "word_boundary" and the word field from "text" to "word".
+  Both old and new field names are now checked so the code works across
+  edge-tts v6 and v7 without breaking.
+- VERSION PIN: requirements.txt should pin edge-tts to avoid silent breakage:
+    edge-tts>=6.1.9,<8.0.0
+- FALLBACK GUARD: if word timings are still empty after capture, the
+  estimate fallback in caption_sync is now explicitly triggered from here
+  rather than silently returning an empty list.
+
+UPGRADES v3.0 (retained):
+- SHOCK_WORD EMPHASIS: inject a dramatic pause before the shock_word so
+  Edge-TTS reads it with natural stress via '...' pause markers in text.
+- PRE-CTA PAUSE: inject a longer pause before the CTA text so the
+  call-to-action lands after a beat.
 - Both transformations happen in prepare_script_text(), called from main.py.
 """
 
@@ -43,7 +51,6 @@ def prepare_script_text(script: dict) -> str:
 
     # Inject dramatic pause around shock_word in body text
     if shock and shock in body:
-        # "...IMPOSSIBLE..." → "... IMPOSSIBLE ..."
         body = body.replace(shock, f"... {shock} ...")
 
     # Add a beat before the CTA so it lands cleanly
@@ -62,19 +69,36 @@ async def generate_voiceover_with_timings(text: str, output_path: str) -> tuple[
     clean_text = clean_for_tts(text)
 
     try:
-        return await _edge_tts_with_timings(clean_text, output_path)
+        path, timings = await _edge_tts_with_timings(clean_text, output_path)
+        if timings:
+            return path, timings
+        # Got audio but 0 boundaries — log clearly and fall through to backups
+        log.warning("Primary voice returned 0 word boundaries — trying backup voices")
     except Exception as e:
         log.warning(f"Edge-TTS primary failed: {e} — trying backup voices")
 
     for voice in BACKUP_VOICES:
         try:
-            return await _edge_tts_with_timings(clean_text, output_path, voice=voice)
+            path, timings = await _edge_tts_with_timings(clean_text, output_path, voice=voice)
+            if timings:
+                return path, timings
+            log.warning(f"Backup voice {voice} returned 0 boundaries")
         except Exception as e:
             log.warning(f"Backup voice {voice} failed: {e}")
 
-    log.warning("Falling back to gTTS (no word timings)")
-    path = await _gtts(clean_text, output_path)
-    return path, []
+    # All Edge-TTS voices failed or returned no boundaries
+    # Re-generate audio with primary voice for quality, use estimated timings
+    log.warning("All Edge-TTS voices returned 0 boundaries — using estimated timings")
+    try:
+        path, _ = await _edge_tts_with_timings(clean_text, output_path)
+    except Exception:
+        log.warning("Falling back to gTTS (no word timings)")
+        path = await _gtts(clean_text, output_path)
+
+    from core.caption_sync import _estimate_timings
+    estimated = _estimate_timings(clean_text)
+    log.info(f"Estimated {len(estimated)} word timings from text length")
+    return path, estimated
 
 
 async def generate_voiceover(text: str, output_path: str) -> str:
@@ -96,26 +120,34 @@ async def _edge_tts_with_timings(
         pitch="+0Hz",
     )
 
-    tmp_path  = output_path + ".tmp.mp3"
+    tmp_path   = output_path + ".tmp.mp3"
     boundaries = []
 
     with open(tmp_path, "wb") as f:
         async for event in communicate.stream():
             if event["type"] == "audio":
                 f.write(event["data"])
-            elif event["type"] == "WordBoundary":
+
+            # FIX v3.1: edge-tts v6 uses "WordBoundary", v7 uses "word_boundary"
+            # Check both so we work across versions without breaking.
+            elif event["type"] in ("WordBoundary", "word_boundary"):
                 start_sec    = event["offset"] / TICKS_PER_SECOND
                 duration_sec = event["duration"] / TICKS_PER_SECOND
-                word         = event.get("text", "").strip()
+
+                # FIX v3.1: edge-tts v7 uses "word" key, v6 uses "text" key
+                word = event.get("text", event.get("word", "")).strip()
+
                 if word:
                     boundaries.append({
-                        "word": word.upper(),
+                        "word":  word.upper(),
                         "start": round(start_sec, 3),
-                        "end": round(start_sec + duration_sec, 3),
+                        "end":   round(start_sec + duration_sec, 3),
                     })
 
     os.replace(tmp_path, output_path)
-    log.info(f"Edge-TTS: {voice} → {len(boundaries)} word boundaries → {output_path}")
+    log.info(
+        f"Edge-TTS: {voice} → {len(boundaries)} word boundaries → {output_path}"
+    )
     return output_path, boundaries
 
 
