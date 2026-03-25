@@ -1,17 +1,20 @@
 """
-Video Assembler v3.0 — combines footage, voiceover, captions, music.
+Video Assembler v3.1 — combines footage, voiceover, captions, music.
 
-UPGRADES v3.0 (rating fixes):
-- LANDSCAPE CROP: clips tagged _needs_crop get a scale+crop filter applied
-  before the zoompan pass, converting 16:9 → 9:16 without black bars.
-- DYNAMIC XFADE OFFSET: loop xfade offset now calculated from actual audio
-  duration, not a fixed 0.3s. Longer videos get a longer, smoother fade.
-- CI-AWARE PRESET: uses ultrafast in GitHub Actions env (GITHUB_ACTIONS=true),
-  veryfast locally. Halves encode time in CI with negligible quality loss.
-- THUMBNAIL EXTRACTION: after assembly, FFmpeg extracts the best frame at
-  ~1.2s (the hook moment) and saves as thumbnail.jpg for YouTube upload.
-- FONT FALLBACK CHAIN: tries custom font, then system Montserrat, then
-  Liberation Sans — prevents silent caption failures in CI.
+FIXES v3.1:
+- CAPTION FILTER NULL: When word_timings is empty the caption_filter was set
+  to "copy" which is NOT a valid FFmpeg video filtergraph filter. The correct
+  passthrough for video in a filter_complex is "null". Fixed in both the
+  assembler and in caption_sync.build_caption_drawtext().
+- XFADE DURATION GUARD: Added a minimum audio duration check before computing
+  xfade offset to prevent negative offset values on very short clips.
+
+UPGRADES v3.0 (retained):
+- LANDSCAPE CROP: clips tagged _landscape in filename get a 16:9→9:16 crop.
+- DYNAMIC XFADE OFFSET: loop xfade offset calculated from actual audio duration.
+- CI-AWARE PRESET: ultrafast in GitHub Actions, veryfast locally.
+- THUMBNAIL EXTRACTION: extracts hook frame at ~1.2s as thumbnail.jpg.
+- FONT FALLBACK CHAIN: custom → system Montserrat → Liberation Sans.
 """
 
 import os, asyncio, logging
@@ -24,21 +27,20 @@ FFMPEG  = os.getenv("FFMPEG_PATH",  "ffmpeg")
 FFPROBE = os.getenv("FFPROBE_PATH", "ffprobe")
 log = logging.getLogger(__name__)
 
-FONT_PATH     = os.path.join(os.path.dirname(__file__), "..", "assets", "font.ttf")
+FONT_PATH      = os.path.join(os.path.dirname(__file__), "..", "assets", "font.ttf")
 FONT_FALLBACKS = [
     FONT_PATH,
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Ubuntu CI
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",   # Ubuntu CI
     "/usr/share/fonts/truetype/fonts-liberation/LiberationSans-Bold.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",  # macOS
+    "/System/Library/Fonts/Helvetica.ttc",   # macOS
 ]
 
 VIDEO_W, VIDEO_H = 720, 1280
 AUDIO_BITRATE    = "192k"
 
-# Use ultrafast in GitHub Actions to stay within the 6h job limit
 _IS_CI  = os.getenv("GITHUB_ACTIONS", "false").lower() == "true"
 _PRESET = "ultrafast" if _IS_CI else "veryfast"
-_CRF    = "23" if _IS_CI else "18"
+_CRF    = "23"        if _IS_CI else "18"
 
 
 def _find_font() -> str:
@@ -55,11 +57,6 @@ async def _build_footage(
     output: str,
     tmp_dir: str,
 ):
-    """
-    Build a single concatenated clip with zoompan.
-    Landscape clips (tagged _landscape in filename) get a 16:9→9:16 crop
-    applied before the zoom pass.
-    """
     concat_file = os.path.join(tmp_dir, "concat.txt")
     lines       = []
     accumulated = 0.0
@@ -76,12 +73,9 @@ async def _build_footage(
     with open(concat_file, "w") as f:
         f.write("\n".join(lines))
 
-    # Detect if any landscape clips exist (they'll have "_landscape" in name)
-    # We apply a crop-to-portrait step before zoompan
     has_landscape = any("_landscape" in p for p in footage_paths)
 
     if has_landscape:
-        # Crop 16:9 → 9:16 by taking centre 9/16 of width, then scale + zoom
         portrait_crop = (
             f"crop=ih*9/16:ih,"
             f"scale=1280:2276,"
@@ -123,22 +117,42 @@ async def _ffmpeg_assemble(
         caption_chunks = group_into_chunks(word_timings, chunk_size=1)
         caption_filter = build_caption_drawtext(caption_chunks, font, VIDEO_H, VIDEO_W)
     else:
-        caption_filter = "copy"
+        # FIX v3.1: "null" is the correct FFmpeg video passthrough in a filter_complex.
+        # "copy" is only valid in -c:v stream copy mode, NOT inside filtergraphs.
+        caption_filter = "null"
 
-    safe_caption_filter = caption_filter if caption_filter and caption_filter != "null" else "copy"
+    # Guard against the rare case where build_caption_drawtext returns empty string
+    if not caption_filter or caption_filter == "copy":
+        caption_filter = "null"
 
-    # Dynamic xfade — scale with duration for a natural feel
-    xfade_duration = min(0.7, duration * 0.015)          # ~0.7s for 45s video
-    xfade_offset   = max(duration - xfade_duration - 0.1, duration * 0.88)
+    # FIX v3.1: guard minimum duration so xfade offset is never negative or zero
+    min_duration_for_xfade = 2.0
+    if duration < min_duration_for_xfade:
+        log.warning(f"Audio duration {duration:.1f}s is very short — skipping xfade")
+        xfade_duration = 0.0
+        xfade_offset   = duration
+    else:
+        xfade_duration = min(0.7, duration * 0.015)
+        xfade_offset   = max(duration - xfade_duration - 0.1, duration * 0.88)
 
-    loop_filter = (
-        f"[0:v]split[v1][v2];"
-        f"[v1]trim=0:{xfade_offset + xfade_duration}[va];"
-        f"[v2]trim={xfade_offset}:{duration},setpts=PTS-STARTPTS[vb];"
-        f"[va][vb]xfade=transition=fade:duration={xfade_duration:.3f}:offset={xfade_offset:.3f}[vlooped]"
+    # When xfade_duration is 0 we skip the loop entirely to avoid invalid filter
+    if xfade_duration > 0:
+        loop_filter = (
+            f"[0:v]split[v1][v2];"
+            f"[v1]trim=0:{xfade_offset + xfade_duration}[va];"
+            f"[v2]trim={xfade_offset}:{duration},setpts=PTS-STARTPTS[vb];"
+            f"[va][vb]xfade=transition=fade:duration={xfade_duration:.3f}:offset={xfade_offset:.3f}[vlooped]"
+        )
+        video_input_label = "[vlooped]"
+    else:
+        loop_filter       = "[0:v]null[vlooped]"
+        video_input_label = "[vlooped]"
+
+    voice_mastering = (
+        "bass=g=6:f=110,"
+        "compand=attacks=0:points=-80/-80|-15/-15|0/-10.8|20/-5.2,"
+        "volume=1.2"
     )
-
-    voice_mastering = "bass=g=6:f=110,compand=attacks=0:points=-80/-80|-15/-15|0/-10.8|20/-5.2,volume=1.2"
 
     base_flags = [
         "-t", str(duration),
@@ -155,9 +169,9 @@ async def _ffmpeg_assemble(
             "-i", music_path,
             "-filter_complex",
                 f"{loop_filter};"
-                f"[vlooped]{safe_caption_filter}[vout];"
+                f"{video_input_label}{caption_filter}[vout];"
                 f"[1:a]{voice_mastering}[voice];"
-                f"[2:a]volume=0.04,aloop=loop=-1:size=44100[music];"   # ← 0.04 not 0.08
+                f"[2:a]volume=0.04,aloop=loop=-1:size=44100[music];"
                 f"[voice][music]amix=inputs=2:duration=first[aout]",
             "-map", "[vout]", "-map", "[aout]",
         ] + base_flags + [output_path]
@@ -169,7 +183,7 @@ async def _ffmpeg_assemble(
             "-i", audio_path,
             "-filter_complex",
                 f"{loop_filter};"
-                f"[vlooped]{safe_caption_filter}[vout];"
+                f"{video_input_label}{caption_filter}[vout];"
                 f"[1:a]{voice_mastering}[aout]",
             "-map", "[vout]", "-map", "[aout]",
         ] + base_flags + [output_path]
@@ -179,8 +193,6 @@ async def _ffmpeg_assemble(
 async def extract_thumbnail(video_path: str, output_path: str, timestamp: float = 1.2) -> str:
     """
     Extract a single frame at `timestamp` seconds as a JPEG thumbnail.
-    YouTube shows this in Browse and Search — significantly improves CTR.
-    The hook moment (~1.2s) is usually the most visually arresting frame.
     Returns thumbnail path, or empty string on failure.
     """
     try:
@@ -189,7 +201,7 @@ async def extract_thumbnail(video_path: str, output_path: str, timestamp: float 
             "-ss", str(timestamp),
             "-i", video_path,
             "-vframes", "1",
-            "-q:v", "2",           # JPEG quality 2 = near-lossless
+            "-q:v", "2",
             "-vf", f"scale={VIDEO_W}:{VIDEO_H}",
             output_path,
         ]
@@ -248,7 +260,6 @@ async def assemble_video(
         word_timings=word_timings or [],
     )
 
-    # Extract thumbnail from assembled video
     thumb_path = output_path.replace(".mp4", "_thumb.jpg")
     thumb_path = await extract_thumbnail(output_path, thumb_path, timestamp=1.2)
 
