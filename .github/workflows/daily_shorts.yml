@@ -1,14 +1,31 @@
 name: Daily Animal Shorts Bot
 
+# FIXED v3.0: 4 separate cron jobs at correct IST times.
+# Previous version had a single cron at 02:00 UTC = 07:30 IST, so all 4
+# videos uploaded together at the wrong time.
+# IST = UTC+5:30, so correct conversions are:
+#   08:00 IST = 02:30 UTC  →  "30 2  * * *"
+#   12:00 IST = 06:30 UTC  →  "30 6  * * *"
+#   18:00 IST = 12:30 UTC  →  "30 12 * * *"  ← best slot
+#   21:00 IST = 15:30 UTC  →  "30 15 * * *"
+
 on:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "30 2  * * *"   # 08:00 IST — Morning commute
+    - cron: "30 6  * * *"   # 12:00 IST — Lunch break
+    - cron: "30 12 * * *"   # 18:00 IST — Evening peak (BEST slot)
+    - cron: "30 15 * * *"   # 21:00 IST — Night scroll
   workflow_dispatch:
+    inputs:
+      count:
+        description: "Number of videos to generate"
+        required: false
+        default: "1"
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 720
+    timeout-minutes: 120   # Each run makes 1 video — 2h is plenty
 
     steps:
       - name: Checkout code
@@ -24,28 +41,40 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y ffmpeg fonts-liberation
-          echo "FFMPEG_PATH=$(which ffmpeg)" >> $GITHUB_ENV
+          echo "FFMPEG_PATH=$(which ffmpeg)"   >> $GITHUB_ENV
           echo "FFPROBE_PATH=$(which ffprobe)" >> $GITHUB_ENV
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
       - name: Download font
         run: |
           mkdir -p assets
-          wget -q "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" -O assets/font.ttf || echo "Font skipped"
+          wget -q "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" \
+               -O assets/font.ttf || echo "Font download skipped — will use Liberation Sans"
 
-      - name: Create output directory
-        run: mkdir -p output
+      - name: Create output and music directories
+        run: mkdir -p output assets/music
 
-      - name: Run bot
+      - name: Run bot (1 video per slot)
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          YT_CREDENTIALS: ${{ secrets.YT_CREDENTIALS }}
-          FFMPEG_PATH: ${{ env.FFMPEG_PATH }}
-          FFPROBE_PATH: ${{ env.FFPROBE_PATH }}
-          VIDEOS_PER_DAY: "4"
-          TTS_VOICE: "en-US-AndrewNeural"
-          YT_CATEGORY: "15"
+          GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY:  ${{ secrets.PEXELS_API_KEY }}
+          YT_CREDENTIALS:  ${{ secrets.YT_CREDENTIALS }}
+          FFMPEG_PATH:     ${{ env.FFMPEG_PATH }}
+          FFPROBE_PATH:    ${{ env.FFPROBE_PATH }}
+          VIDEOS_PER_DAY:  ${{ github.event.inputs.count || '1' }}
+          TTS_VOICE:       "en-US-BrianNeural"
+          YT_CATEGORY:     "15"
+          GITHUB_ACTIONS:  "true"
         run: python main.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs-${{ github.run_id }}
+          path: |
+            bot_log.txt
+            output/
+          retention-days: 3
