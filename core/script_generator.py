@@ -1,13 +1,19 @@
 """
-Script Generator v3.1 — Groq (primary) → Gemini → Claude (fallbacks).
+Script Generator v4.0 — Viral Scenario/POV Format
 
-CHANGES v3.1:
-- Added Anthropic Claude as third fallback provider.
-- Improved 400 error logging: now prints the actual response body so you
-  can see exactly why Groq/Gemini rejected the request.
-- Reduced prompt token count slightly to avoid edge-case 400s on Groq.
-
-NICHE UPDATE: Changed from "animal facts" to "funny animal moments".
+COMPLETE OVERHAUL v4.0:
+- FORMAT CHANGE: From "AI narrator voiceover facts" to "scenario-driven story
+  with text overlays + minimal reaction voice." This matches what actually goes
+  viral: meme-style storytelling where the VISUAL TEXT tells the story.
+- SCENARIO STRUCTURE: Each video is a mini-story with setup → escalation →
+  punchline → loop, told through on-screen text beats + animal footage.
+- VOICE ROLE CHANGED: Voice is now the animal's internal monologue (funny,
+  personality-driven) OR a short observer comment — NOT a documentary narrator.
+- TEXT OVERLAY BEATS: Script now generates timed "scene_beats" — big bold
+  text moments that appear on screen like meme captions driving the joke.
+- POV FORMATS: "POV: you're the dog when...", "When your cat does X", "Me
+  trying to Y" — formats proven to get 10M+ views on animal shorts.
+- 55-SECOND TARGET: Data shows 50-60s Shorts get 1.7M avg views vs 15s.
 """
 
 import os, json, asyncio, httpx, logging
@@ -26,31 +32,99 @@ CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 
 PERFORMANCE_LOG = os.path.join(os.path.dirname(__file__), "..", "performance_log.json")
 
-# ── CHANGE 1: Updated SUBNICHES from animal facts → funny animal moments ──────
-SUBNICHES = [
-    "Animals caught doing hilariously dumb things on camera",
-    "Pets having absolute meltdowns over nothing",
-    "Animals that clearly think they are human",
-    "Wild animals completely failing at basic tasks",
-    "Cats and dogs having existential crises",
-    "Animals reacting to mirrors, vacuums, and cucumbers",
-    "Baby animals discovering the world for the first time",
-    "Animals with zero survival instincts whatsoever",
-    "Pets interrupting their owners at the worst moments",
-    "Animals that are just built differently",
+# Viral scenario formats proven to work for animal shorts
+VIRAL_SCENARIO_FORMATS = [
+    "POV: you are the [animal] when [relatable situation]",
+    "When your [animal] [does something funny/relatable]",
+    "The [animal] when [unexpected situation] hits different",
+    "Me as a [animal] discovering [thing] for the first time",
+    "That moment when your [animal] realizes [funny truth]",
+    "[Animal] trying to [fail at human thing] is sending me 💀",
+    "Nobody: ... [Animal]: [absurd reaction to normal thing]",
+    "The [animal] understood the assignment 🎯",
+    "My [animal] said 'not today' and proceeded to [chaos]",
+    "Things my [animal] does that I can't explain but fully respect",
 ]
 
-LENGTH_MODES = ["short", "short", "long", "long"]
+# Subniches that consistently get shares
+SUBNICHES = [
+    "pets acting like dramatic humans",
+    "animals with zero survival instincts",
+    "animals that fully understood the assignment",
+    "pets catching their owners in 4K",
+    "animals having an existential crisis over nothing",
+    "pets that run the household and everyone knows it",
+    "wild animals behaving like suburban dads",
+    "baby animals discovering the world for the first time",
+    "animals that chose chaos and we respect it",
+    "pets absolutely roasting their owners without saying a word",
+]
 
-# ── CHANGE 2: Updated FEW_SHOT_VIRAL examples to funny/personality-driven tone ─
+LENGTH_MODES = ["short", "long", "long", "long"]
+
+# What ACTUALLY viral animal shorts look like — scenario text overlay format
 FEW_SHOT_VIRAL = """
-VIRAL EXAMPLE 1 (hook_type: chaos_normal, length: short, ~38 words):
-{"title":"This dog just called his owner out #Shorts","animal_keyword":"golden retriever","hook":"This dog heard his owner lie and he was NOT okay with it.","body":"Owner says 'we're not going to the vet'... dog stares. Wait. Owner grabs the car keys. Nope. Dog sits down. Actually — he sat down and refused to move for 45 minutes.","cta":"Send this to someone whose dog does this.","shock_word":"REFUSED","loop_hook":"Still think dogs don't understand everything you say?"}
+═══════════════════════════════════════════════
+VIRAL FORMAT EXAMPLES (10M+ views each)
+These use TEXT OVERLAYS as the main storytelling device, not just narration.
+The voice is OPTIONAL or plays the animal's inner monologue.
+═══════════════════════════════════════════════
 
-VIRAL EXAMPLE 2 (hook_type: wrong_fact, length: long, ~175 words):
-{"title":"This cat owns the whole house #Shorts","animal_keyword":"cat","hook":"Your cat is not ignoring you. It's judging you.","body":"Scientists studied 100 cats for 3 years... Wait. Cats recognise their owner's voice within milliseconds. Nope — they just choose not to respond. Actually, MRI scans showed cats feel the same attachment as dogs. They just express it differently. How? By knocking your water off the table at 3am. By sitting on your laptop during a meeting. By yelling at 2am for no reason. That's not random. That's communication. And here's the wild part — cats that ignore you most are actually the most bonded to you. The silent treatment IS the love language.","cta":"Send this to someone who thinks their cat hates them.","shock_word":"JUDGING","loop_hook":"So next time your cat ignores you... it actually means the opposite."}
+VIRAL EXAMPLE 1 — POV Format (hook: "POV you're the dog"):
+{
+  "title": "The dog understood the assignment 😭 #Shorts",
+  "animal_keyword": "golden retriever",
+  "format_type": "pov",
+  "scene_beats": [
+    {"timestamp": 0.0,  "overlay_text": "POV: You're the dog", "style": "pov_header", "voice_line": ""},
+    {"timestamp": 1.5,  "overlay_text": "Owner says 'we're not going to the vet'", "style": "setup", "voice_line": "okay cool cool"},
+    {"timestamp": 4.0,  "overlay_text": "Owner grabs the keys", "style": "escalate", "voice_line": "..."},
+    {"timestamp": 6.0,  "overlay_text": "Owner says 'just a quick errand'", "style": "escalate", "voice_line": "I was BORN at night"},
+    {"timestamp": 9.5,  "overlay_text": "The dog:", "style": "reaction_setup", "voice_line": ""},
+    {"timestamp": 11.0, "overlay_text": "SIT DOWN PROTEST ACTIVATED 🪑", "style": "punchline", "voice_line": "not today chief"},
+    {"timestamp": 14.0, "overlay_text": "45 minutes later...", "style": "escalate", "voice_line": "I will die on this floor"},
+    {"timestamp": 17.0, "overlay_text": "Still going 💪", "style": "loop_close", "voice_line": "see you never, vet"},
+    {"timestamp": 19.5, "overlay_text": "Send this to someone whose dog does this 👇", "style": "cta", "voice_line": ""}
+  ],
+  "voice_style": "animal_internal_monologue",
+  "voice_tone": "deadpan comedic",
+  "loop_hook": "The dog understood something we didn't 👀",
+  "pinned_comment": "Does your dog do the sit-down protest too? 🐾",
+  "seo_tags": ["#dogsoftiktok", "#funnydog", "#pets", "#pov", "#shorts", "#animals"]
+}
 
-AVOID: Hooks starting with 'Did you know', dry facts with no personality, 'like and subscribe' CTAs, titles over 48 chars.
+VIRAL EXAMPLE 2 — "When your X" Format:
+{
+  "title": "When your cat catches you lying 😭 #Shorts",
+  "animal_keyword": "cat",
+  "format_type": "when_your",
+  "scene_beats": [
+    {"timestamp": 0.0,  "overlay_text": "When your cat hears you say", "style": "setup", "voice_line": ""},
+    {"timestamp": 1.5,  "overlay_text": "'I don't feed the cat'", "style": "setup", "voice_line": ""},
+    {"timestamp": 3.5,  "overlay_text": "To the vet.", "style": "escalate", "voice_line": ""},
+    {"timestamp": 5.0,  "overlay_text": "The cat:", "style": "reaction_setup", "voice_line": ""},
+    {"timestamp": 6.5,  "overlay_text": "👁️👁️", "style": "punchline", "voice_line": "I remember everything"},
+    {"timestamp": 9.0,  "overlay_text": "Scientists: cats don't hold grudges", "style": "escalate", "voice_line": ""},
+    {"timestamp": 11.5, "overlay_text": "The cat at 3AM:", "style": "escalate", "voice_line": ""},
+    {"timestamp": 13.0, "overlay_text": "*knocks everything off the counter*", "style": "punchline", "voice_line": "this is for the vet"},
+    {"timestamp": 17.0, "overlay_text": "Tag someone with a cat like this 😭", "style": "cta", "voice_line": ""}
+  ],
+  "voice_style": "animal_internal_monologue",
+  "voice_tone": "cold and calculating",
+  "loop_hook": "The cat was always watching. Always.",
+  "pinned_comment": "What has your cat done for revenge? 💀",
+  "seo_tags": ["#catsoftiktok", "#funnycat", "#catbehavior", "#pov", "#shorts", "#relatable"]
+}
+
+═══════════════════════════════════════════════
+KEY RULES:
+- scene_beats drive the story — each one is a BIG TEXT MOMENT on screen
+- voice_line is SHORT (3-6 words max) or empty — it's the animal's inner voice
+- The joke/story is told by TEXT + TIMING, not explained by narration
+- Total beats should cover 18-55 seconds depending on length_mode
+- punchline beats use ALL CAPS or emoji for emphasis
+- CTA always last beat, always share-bait
+═══════════════════════════════════════════════
 """
 
 
@@ -74,123 +148,84 @@ def _load_performance_data() -> dict:
 def get_optimised_length_mode() -> str:
     data = _load_performance_data()
     videos = data.get("videos", [])
-
     short_evrs = [v["engaged_view_rate"] for v in videos if v.get("length_mode") == "short" and v.get("engaged_view_rate", 0) > 0]
     long_evrs  = [v["engaged_view_rate"] for v in videos if v.get("length_mode") == "long"  and v.get("engaged_view_rate", 0) > 0]
-
     if len(short_evrs) >= 3 and len(long_evrs) >= 3:
         avg_short = sum(short_evrs) / len(short_evrs)
         avg_long  = sum(long_evrs)  / len(long_evrs)
         winner = "short" if avg_short > avg_long else "long"
-        log.info(f"Length mode optimiser: short EVR={avg_short:.1%} long EVR={avg_long:.1%} → using '{winner}'")
         return winner
-
     now = datetime.now()
     hour_slot = now.hour // 6
     return LENGTH_MODES[hour_slot % len(LENGTH_MODES)]
 
 
-def get_best_hook_types() -> list[str]:
-    data = _load_performance_data()
-    videos = data.get("videos", [])
-
-    evr_by_type: dict[str, list[float]] = {}
-    for v in videos:
-        ht = v.get("hook_type", "unknown")
-        evr = v.get("engaged_view_rate", 0)
-        if ht and evr > 0:
-            evr_by_type.setdefault(ht, []).append(evr)
-
-    ranked = sorted(
-        [(ht, sum(evrs)/len(evrs)) for ht, evrs in evr_by_type.items() if len(evrs) >= 2],
-        key=lambda x: x[1], reverse=True
-    )
-
-    if ranked:
-        top = [ht for ht, _ in ranked[:2]]
-        log.info(f"Hook type A/B: top performers = {ranked[:3]}")
-        return top
-
-    return ["chaos_normal", "wrong_fact", "scale_shock", "vs_battle"]
-
-
-def load_performance_feedback() -> str:
-    data = _load_performance_data()
-    videos = data.get("videos", [])
-    if len(videos) < 5:
-        return ""
-
-    def get_evr(e):
-        return e.get("engaged_view_rate", 0)
-
-    scores = [get_evr(e) for e in videos if get_evr(e) > 0]
-    if not scores:
-        return ""
-
-    avg = sum(scores) / len(scores)
-    top = [v for v in videos if get_evr(v) > avg * 1.5]
-    bad = [v for v in videos if 0 < get_evr(v) < avg * 0.5]
-
-    lines = ["\n\nALGORITHM FEEDBACK LOOP:"]
-    if top:
-        lines.append("VIRAL PATTERNS (REPLICATE):")
-        for v in top[-3:]:
-            lines.append(f"  - [{v.get('hook_type','')}] {v.get('title','')} (EVR: {get_evr(v):.1%})")
-    if bad:
-        lines.append("SWIPE-AWAY PATTERNS (AVOID):")
-        for v in bad[-3:]:
-            lines.append(f"  - [{v.get('hook_type','')}] {v.get('title','')} (EVR: {get_evr(v):.1%})")
-    return "\n".join(lines)
-
-
-def build_prompt(count: int, subniche: str, used_animals: list[str],
-                 length_mode: str, best_hook_types: list[str]) -> str:
+def build_prompt(count: int, subniche: str, used_animals: list[str], length_mode: str) -> str:
     exclusion = build_exclusion_prompt(used_animals)
-    performance_feedback = load_performance_feedback()
-    hook_preference = f"PREFERRED hook_types for this run (highest EVR): {', '.join(best_hook_types)}"
 
     if length_mode == "short":
-        length_instructions = """TARGET: 13-SECOND ULTRA-SHORT (38-42 words, title MAX 48 chars).
-- Aim for 100% completion rate.
-- Loop MUST be seamless: end of CTA leads back into hook."""
+        beat_instructions = """
+LENGTH: SHORT (15-20 seconds)
+- 6-8 scene_beats total
+- Timestamps from 0.0 to ~19.0
+- Ultra-tight punchline — setup → punchline → CTA only
+- Best for: single reaction moments, one joke, one twist"""
     else:
-        length_instructions = """TARGET: 45-55 SECOND DEEP-DIVE (155-175 words, title MAX 48 chars).
-- Escalating stakes: Moment 1 weird, Moment 2 funnier, Moment 3 unbelievable.
-- At least 3 pattern interrupts (Wait... / Nope. / Actually...)."""
+        beat_instructions = """
+LENGTH: LONG (45-55 seconds)
+- 10-14 scene_beats total
+- Timestamps from 0.0 to ~53.0
+- Full escalating story arc: Setup → 2-3 escalations → punchline → aftermath → CTA
+- Pattern interrupts between beats (unexpected turns that make viewer stay)
+- The punchline should feel EARNED by the build-up"""
 
-    # ── CHANGE 3: Updated VIRAL RULES for funny-moments niche ─────────────────
-    return f"""You are a master of YouTube Shorts virality. Write {count} scripts about "{subniche}".
+    format_choice = "pov OR when_your OR nobody_animal OR understood_assignment"
+
+    return f"""You are a viral YouTube Shorts creator specializing in funny animal content.
+The best animal shorts are NOT documentary-style narration videos.
+They are SCENARIO-DRIVEN stories told through big text overlays on screen.
+The voice (if any) is SHORT inner monologue — 3-6 words max per beat.
+
+Write {count} viral animal short script(s) about the theme: "{subniche}"
 {exclusion}
-{performance_feedback}
-{hook_preference}
 
 {FEW_SHOT_VIRAL}
-{length_instructions}
 
-VIRAL RULES:
-1. INVOLUNTARY REPLAY: Script end resolves the hook setup.
-2. REACTION-FIRST: Lead with the animal's reaction/behavior, not a dry fact.
-3. TYPE B CTA: Share-bait only. "Send this to someone who..."
-4. PATTERN INTERRUPTS: Use 'Wait...', 'Nope.', or 'Actually...' in body.
-5. TITLE: MAX 48 characters. Must tease the funny moment without revealing it.
-6. TONE: Conversational, like texting a friend. NOT a nature documentary.
+{beat_instructions}
 
-Respond ONLY with a raw JSON array. No markdown, no backticks, no preamble.
+FORMAT REQUIREMENTS:
+- format_type: {format_choice}
+- Each scene_beat MUST have: timestamp (float), overlay_text (string), style (string), voice_line (string — can be empty "")
+- overlay_text styles: "pov_header", "setup", "escalate", "reaction_setup", "punchline", "aftermath", "loop_close", "cta"
+- voice_style: "animal_internal_monologue" or "deadpan_observer" or "none"
+- voice_tone: short description of delivery vibe (e.g. "dramatic and betrayed", "smug", "dead inside")
+- Punchline beats: use CAPS, emoji, *action text* for maximum visual impact
+- CTA beat: always share-bait ("Tag someone...", "Send this to...", "If your pet does this...")
+- animal_keyword: the specific animal (will be used to fetch footage from Pexels)
+- loop_hook: 1 sentence shown as final text that feeds curiosity back to start
+
+CRITICAL: The story must work WITHOUT audio — text overlays carry the joke.
+The voice_lines are just flavor/inner monologue, not the main storytelling.
+
+Respond ONLY with a raw JSON array. No markdown, no backticks, no explanation.
 
 [
   {{
-    "title": "Max 48 chars with curiosity gap #Shorts",
-    "animal_keyword": "animal name",
+    "title": "MAX 48 chars with curiosity gap #Shorts",
+    "animal_keyword": "specific animal name for Pexels search",
+    "format_type": "pov | when_your | nobody_animal | understood_assignment",
     "length_mode": "{length_mode}",
-    "hook": "Must stop the swipe in 1.5 seconds.",
-    "body": "Fast paced. Use '...' for pauses. Min 3 pattern interrupts for long mode.",
-    "cta": "TYPE B focus (Share Bait).",
-    "shock_word": "ONE all-caps word e.g. REFUSED / NOPE / WAIT",
-    "loop_hook": "1-2 sentences bridging CTA back to hook.",
-    "hook_type": "chaos_normal | wrong_fact | scale_shock | vs_battle",
-    "cta_type": "B",
-    "seo_tags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
-    "pinned_comment": "Debate-bait question e.g. 'Does your pet do this too?'"
+    "scene_beats": [
+      {{"timestamp": 0.0, "overlay_text": "Opening text hook", "style": "pov_header", "voice_line": ""}},
+      {{"timestamp": 2.5, "overlay_text": "Next beat", "style": "setup", "voice_line": "optional 3-6 word animal voice"}},
+      "...more beats...",
+      {{"timestamp": 19.0, "overlay_text": "Tag someone who needs to see this 👇", "style": "cta", "voice_line": ""}}
+    ],
+    "voice_style": "animal_internal_monologue",
+    "voice_tone": "dramatic and betrayed",
+    "loop_hook": "One sentence to loop viewers back to start",
+    "pinned_comment": "Engaging debate-bait question",
+    "seo_tags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5", "#shorts"]
   }}
 ]"""
 
@@ -221,21 +256,61 @@ def _enforce_title_length(title: str, max_chars: int = 48) -> str:
 
 
 def validate_scripts(scripts: list, length_mode: str) -> list:
+    """Validate and repair generated scripts."""
     fixed = []
     for s in scripts:
+        # Title
         if s.get("title"):
             s["title"] = _enforce_title_length(s["title"], max_chars=48)
-        if not s.get("shock_word"):
-            s["shock_word"] = "WAIT"
-        if not s.get("loop_hook") or len(s.get("loop_hook", "").split()) < 3:
-            s["loop_hook"] = f"Wait... did you catch that? Watch the {s.get('animal_keyword', 'animal')} again."
+        else:
+            animal = s.get("animal_keyword", "animal")
+            s["title"] = f"This {animal} understood the assignment #Shorts"
+
+        # Ensure scene_beats exist and are well-formed
+        beats = s.get("scene_beats", [])
+        if not beats:
+            # Build fallback beats from any available fields
+            animal = s.get("animal_keyword", "animal")
+            beats = [
+                {"timestamp": 0.0,  "overlay_text": f"POV: you're the {animal}", "style": "pov_header", "voice_line": ""},
+                {"timestamp": 2.0,  "overlay_text": "When everything is fine", "style": "setup", "voice_line": "vibing"},
+                {"timestamp": 5.0,  "overlay_text": "Until it's not.", "style": "escalate", "voice_line": "..."},
+                {"timestamp": 8.0,  "overlay_text": f"THE {animal.upper()}:", "style": "reaction_setup", "voice_line": ""},
+                {"timestamp": 10.0, "overlay_text": "CHAOS ACTIVATED 💀", "style": "punchline", "voice_line": "not my problem"},
+                {"timestamp": 14.0, "overlay_text": "Tag someone who gets it 👇", "style": "cta", "voice_line": ""},
+            ]
+        # Ensure each beat has required fields
+        for beat in beats:
+            beat.setdefault("timestamp", 0.0)
+            beat.setdefault("overlay_text", "")
+            beat.setdefault("style", "setup")
+            beat.setdefault("voice_line", "")
+
+        # Sort by timestamp
+        beats.sort(key=lambda b: b["timestamp"])
+        s["scene_beats"] = beats
+
+        # Other defaults
+        if not s.get("voice_style"):
+            s["voice_style"] = "animal_internal_monologue"
+        if not s.get("voice_tone"):
+            s["voice_tone"] = "deadpan comedic"
+        if not s.get("loop_hook"):
+            animal = s.get("animal_keyword", "animal")
+            s["loop_hook"] = f"The {animal} was always built different 👀"
         if not s.get("seo_tags") or len(s.get("seo_tags", [])) < 3:
             animal_tag = s.get("animal_keyword", "animal").replace(" ", "").lower()
-            s["seo_tags"] = [f"#{animal_tag}", "#funnyanimals", "#pets", "#shorts", "#animals"]
+            s["seo_tags"] = [f"#{animal_tag}", "#funnyanimals", "#pets", "#pov", "#shorts", "#relatable"]
         if not s.get("pinned_comment"):
             animal = s.get("animal_keyword", "this animal")
-            s["pinned_comment"] = f"Does your {animal} do this too? Drop a 🐾 below!"
+            s["pinned_comment"] = f"Does your {animal} do this? Drop a 🐾"
         s["length_mode"] = length_mode
+
+        # Build a minimal voice narration from voice_lines for TTS
+        # (only the non-empty voice_line beats get spoken)
+        voice_lines = [b["voice_line"] for b in beats if b.get("voice_line", "").strip()]
+        s["voice_narration"] = "  ".join(voice_lines) if voice_lines else ""
+
         fixed.append(s)
     return fixed
 
@@ -247,7 +322,7 @@ async def _try_groq(prompt: str) -> list:
     body = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.88,
+        "temperature": 0.92,
         "max_tokens": 4000,
     }
     for attempt in range(3):
@@ -272,7 +347,7 @@ async def _try_gemini(prompt: str) -> list:
     url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.88, "maxOutputTokens": 4000}
+        "generationConfig": {"temperature": 0.92, "maxOutputTokens": 4000}
     }
     for attempt in range(3):
         async with httpx.AsyncClient(timeout=60) as client:
@@ -291,7 +366,6 @@ async def _try_gemini(prompt: str) -> list:
 
 
 async def _try_claude(prompt: str) -> list:
-    """Anthropic Claude as third fallback provider."""
     if not ANTHROPIC_API_KEY:
         raise ValueError("ANTHROPIC_API_KEY not set")
     headers = {
@@ -329,19 +403,16 @@ async def generate_scripts(count: int = 1) -> list[dict]:
             "  ANTHROPIC_API_KEY — paid, at console.anthropic.com"
         )
 
-    subniche        = get_todays_subniche()
-    length_mode     = get_optimised_length_mode()
-    best_hook_types = get_best_hook_types()
+    subniche    = get_todays_subniche()
+    length_mode = get_optimised_length_mode()
 
     log.info(f"Sub-niche: {subniche}")
-    log.info(f"Length mode: {length_mode} (data-driven)")
-    log.info(f"Hook types (best EVR): {best_hook_types}")
+    log.info(f"Length mode: {length_mode}")
 
     used_animals = get_used_animals()
     log.info(f"Animals used so far: {len(used_animals)}")
 
-    prompt = build_prompt(count, subniche, used_animals, length_mode, best_hook_types)
-
+    prompt = build_prompt(count, subniche, used_animals, length_mode)
     scripts = None
 
     if GROQ_API_KEY:
@@ -366,15 +437,11 @@ async def generate_scripts(count: int = 1) -> list[dict]:
             log.error(f"Claude failed: {e}")
 
     if scripts is None:
-        raise RuntimeError(
-            "All AI providers failed. Check your API keys in GitHub Secrets:\n"
-            "  GROQ_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY"
-        )
+        raise RuntimeError("All AI providers failed. Check your API keys.")
 
     scripts = validate_scripts(scripts, length_mode)
 
     new_animals = [s.get("animal_keyword", "").lower().strip() for s in scripts if s.get("animal_keyword")]
     mark_animals_used(new_animals)
-    log.info(f"Marked {len(new_animals)} new animals: {new_animals}")
-    log.info(f"Generated {len(scripts)} scripts")
+    log.info(f"Generated {len(scripts)} scripts | animals: {new_animals}")
     return scripts
