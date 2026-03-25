@@ -1,13 +1,12 @@
 """
-AnimalShortsBot — Full Automation Pipeline v3.0
+AnimalShortsBot — Full Automation Pipeline v4.0
 
-UPGRADES v3.0:
-- Uses prepare_script_text() from tts_engine for shock_word emphasis + CTA pause.
-- assemble_video() now returns (video_path, thumbnail_path) — thumbnail is
-  uploaded to YouTube for better Browse/Search CTR.
-- build_description() moved to youtube_uploader for cleaner separation.
-- trending_audio.ensure_default_track() called at startup.
-- All v3 module changes are wired up here.
+CHANGES v4.0:
+- Pipeline now uses scenario/POV format instead of AI narrator facts.
+- Voice generation uses script["voice_narration"] (inner monologue only).
+- Duration is derived from scene_beats, not just audio length.
+- Description and title updated to reflect scenario format.
+- All v4 module changes wired up.
 """
 
 import os, sys, asyncio, logging
@@ -45,35 +44,56 @@ def now_ist() -> str:
     return datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
 
 
+def _get_beat_duration(script: dict) -> float:
+    """Get the expected video duration from scene beats."""
+    beats = script.get("scene_beats", [])
+    if beats:
+        last_ts = max(b.get("timestamp", 0) for b in beats)
+        return last_ts + 3.5
+    return 30.0
+
+
 async def build_and_upload(script: dict, index: int) -> bool:
     title = script["title"]
+    format_type = script.get("format_type", "pov")
     Path("output").mkdir(exist_ok=True)
 
-    log.info(f"\n{'━'*50}")
+    log.info(f"\n{'━'*55}")
     log.info(f"[{index+1}] Starting: {title}")
-    log.info(f"[{index+1}] Mode: {script.get('length_mode', 'long')} | Animal: {script.get('animal_keyword', '?')}")
-    log.info(f"{'━'*50}")
+    log.info(f"[{index+1}] Format: {format_type} | Animal: {script.get('animal_keyword', '?')}")
+    log.info(f"[{index+1}] Beats: {len(script.get('scene_beats', []))} | "
+             f"Voice: {script.get('voice_style', 'none')}")
+    log.info(f"{'━'*55}")
 
     try:
-        # Step 1 — Build narration with shock_word emphasis + CTA pause
-        full_narration = prepare_script_text(script)
+        # Step 1 — Get voice narration (inner monologue only, may be empty)
+        voice_narration = script.get("voice_narration", "")
+        beat_duration = _get_beat_duration(script)
 
-        # Step 2 — Voiceover + word timings
-        log.info(f"[{index+1}] Generating voiceover...")
-        audio_path, word_timings = await generate_voiceover_with_timings(
-            text=full_narration,
-            output_path=f"output/audio_{index}.mp3",
-        )
+        if voice_narration.strip():
+            log.info(f"[{index+1}] Generating inner monologue voiceover...")
+            audio_path, word_timings = await generate_voiceover_with_timings(
+                text=voice_narration,
+                output_path=f"output/audio_{index}.mp3",
+                target_duration=beat_duration,
+            )
+        else:
+            log.info(f"[{index+1}] Silent scenario — generating silent audio track...")
+            audio_path, word_timings = await generate_voiceover_with_timings(
+                text="",  # triggers silent audio generation
+                output_path=f"output/audio_{index}.mp3",
+                target_duration=beat_duration,
+            )
 
-        # Step 3 — Footage (landscape fallback handled inside fetcher)
+        # Step 2 — Footage
         log.info(f"[{index+1}] Fetching footage: {script['animal_keyword']}")
         footage_paths = await fetch_footage(
             animal=script["animal_keyword"],
-            count=10,
+            count=12,  # More clips for beat-synced editing
         )
 
-        # Step 4 — Assemble video + extract thumbnail
-        log.info(f"[{index+1}] Assembling video...")
+        # Step 3 — Assemble with beat-synced text overlays
+        log.info(f"[{index+1}] Assembling scenario video...")
         video_path, thumb_path = await assemble_video(
             footage_paths=footage_paths,
             audio_path=audio_path,
@@ -82,12 +102,12 @@ async def build_and_upload(script: dict, index: int) -> bool:
             word_timings=word_timings,
         )
 
-        # Step 5 — Build description
-        all_tags    = script.get("tags", []) + script.get("seo_tags", [])
+        # Step 4 — Description
+        all_tags    = script.get("seo_tags", [])
         unique_tags = list(dict.fromkeys(all_tags))
         description = build_description(script, unique_tags)
 
-        # Step 6 — Upload with thumbnail
+        # Step 5 — Upload
         log.info(f"[{index+1}] Uploading to YouTube...")
         video_id = await upload_to_youtube(
             video_path=video_path,
@@ -99,7 +119,6 @@ async def build_and_upload(script: dict, index: int) -> bool:
         )
         log.info(f"[{index+1}] LIVE: https://youtube.com/shorts/{video_id}")
 
-        # Step 7 — Register for analytics
         add_to_upload_queue(video_id, script)
         return True
 
@@ -110,33 +129,29 @@ async def build_and_upload(script: dict, index: int) -> bool:
 
 async def main():
     log.info(f"{'='*55}")
-    log.info(f"AnimalShortsBot v3.0 starting at {now_ist()}")
+    log.info(f"AnimalShortsBot v4.0 — Scenario Format")
+    log.info(f"Starting at {now_ist()}")
     log.info(f"Videos this run: {VIDEOS_PER_DAY}")
     log.info(f"{'='*55}")
 
-    # ── Pre-run setup ──────────────────────────────────────────────────────
-    ensure_default_track()           # Download default music if missing
-    fetch_analytics_for_ready_videos()  # Pull 48h+ analytics from YouTube
+    ensure_default_track()
+    fetch_analytics_for_ready_videos()
     log.info(get_performance_summary())
 
-    # Sync channel so animal tracker is always up-to-date
     try:
         scan_channel_and_update_tracker()
     except Exception as e:
         log.warning(f"Channel scan failed (non-fatal): {e}")
 
-    # ── Generate scripts ───────────────────────────────────────────────────
     log.info(f"Generating {VIDEOS_PER_DAY} script(s)...")
     scripts = await generate_scripts(count=VIDEOS_PER_DAY)
     log.info(f"Scripts ready: {len(scripts)}")
 
-    # ── Build & upload ─────────────────────────────────────────────────────
     results = []
     for i, script in enumerate(scripts):
         ok = await build_and_upload(script, i)
         results.append(ok)
 
-    # ── Summary ────────────────────────────────────────────────────────────
     success = sum(results)
     failed  = len(results) - success
     log.info(f"\n{'='*55}")
