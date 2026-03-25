@@ -6,6 +6,7 @@ UPDATES v2.1:
   that is only resolved by the first word of the hook (Involuntary Replays).
 - RETENTION PUNCH: Added 'Wait' and 'Nope' markers to body text to prevent mid-video swipes.
 - DYNAMIC HOOKS: Rotates Hook Formulas to prevent 'Automation Fatigue'.
+- GROQ SAFETY: Added exponential backoff retry loop for Groq 429 Rate Limits.
 """
 
 import os, json, asyncio, httpx, logging
@@ -131,10 +132,134 @@ Respond ONLY with JSON.
     "hook": "Must stop the swipe in 1.5 seconds.",
     "body": "Fast paced. Use '...' for dramatic pauses.",
     "cta": "TYPE B focus (Share Bait).",
+    "shock_word": "ONE all-caps word e.g. IMPOSSIBLE / INSANE / WAIT",
     "loop_hook": "How the CTA connects back to the hook",
     "hook_type": "wrong_fact | scale_shock | vs_battle | chaos_normal",
-    "cta_type": "B"
+    "cta_type": "B",
+    "seo_tags": ["#tag1", "#tag2", "#tag3"]
   }}
 ]"""
 
-# ... [parse_json, validate_scripts, and generate_scripts remain standard] ...
+
+def parse_json(raw: str) -> list:
+    raw = raw.strip()
+    if "```json" in raw:
+        raw = raw.split("```json")[1].split("```")[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```")[1].split("```")[0].strip()
+    start = raw.find("[")
+    end = raw.rfind("]") + 1
+    if start == -1 or end == 0:
+        raise ValueError(f"No JSON array in response: {raw[:200]}")
+    return json.loads(raw[start:end])
+
+
+def validate_scripts(scripts: list, length_mode: str) -> list:
+    """Enforces safety constraints and Viral Loop connections if the AI misses them."""
+    fixed = []
+    for s in scripts:
+        if not s.get('shock_word'):
+            s['shock_word'] = 'WAIT'
+            
+        # VIRAL REFINEMENT: Force the Loop Connection
+        if not s.get('loop_hook') or len(s.get('loop_hook', '').split()) < 3:
+            s['loop_hook'] = f"Wait... did you catch that? Look at the {s.get('animal_keyword', 'animal')} again."
+
+        # Ensure SEO tags exist
+        if not s.get('seo_tags'):
+            animal_tag = s.get('animal_keyword', 'animal').replace(' ', '').lower()
+            s['seo_tags'] = [f"#{animal_tag}", "#wildlife", "#shorts"]
+
+        s['length_mode'] = length_mode
+        fixed.append(s)
+    return fixed
+
+
+async def _try_groq(prompt: str) -> list:
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    body = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.88,
+        "max_tokens": 4000,
+    }
+    
+    # VIRAL FIX: Exponential backoff for Groq Rate Limits
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(GROQ_URL, headers=headers, json=body)
+            
+        if resp.status_code == 429:
+            wait_time = 60 * (attempt + 1)
+            log.warning(f"Groq API Rate Limit (429) hit! Pausing for {wait_time}s before retry...")
+            await asyncio.sleep(wait_time)
+            continue
+            
+        resp.raise_for_status()
+        return parse_json(resp.json()["choices"][0]["message"]["content"])
+        
+    raise RuntimeError("Groq rate limit exhausted after 3 attempts.")
+
+
+async def _try_gemini(prompt: str) -> list:
+    url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.88, "maxOutputTokens": 4000}
+    }
+    
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, json=body)
+            
+        if resp.status_code == 429:
+            wait = 60 * (attempt + 1)
+            log.warning(f"Gemini rate limit — waiting {wait}s")
+            await asyncio.sleep(wait)
+            continue
+            
+        resp.raise_for_status()
+        return parse_json(resp.json()["candidates"][0]["content"]["parts"][0]["text"])
+        
+    raise RuntimeError("Gemini quota exhausted")
+
+
+async def generate_scripts(count: int = 1) -> list[dict]:
+    if not GROQ_API_KEY and not GEMINI_API_KEY:
+        raise ValueError("No API key found! Add GROQ_API_KEY=gsk_xxx (free at console.groq.com)")
+
+    subniche = get_todays_subniche()
+    length_mode = get_length_mode()
+    log.info(f"Sub-niche: {subniche}")
+    log.info(f"Length mode: {length_mode} ({'13s' if length_mode == 'short' else '55-60s'})")
+
+    used_animals = get_used_animals()
+    log.info(f"Animals used so far: {len(used_animals)}")
+
+    prompt = build_prompt(count, subniche, used_animals, length_mode)
+
+    scripts = None
+    if GROQ_API_KEY:
+        try:
+            scripts = await _try_groq(prompt)
+        except Exception as e:
+            log.warning(f"Groq failed: {e} — trying Gemini...")
+
+    if scripts is None and GEMINI_API_KEY:
+        try:
+            scripts = await _try_gemini(prompt)
+        except Exception as e:
+            log.error(f"Gemini failed: {e}")
+            raise RuntimeError("All AI providers failed.")
+
+    if scripts is None:
+        raise RuntimeError("All AI providers failed. Check your API keys.")
+
+    scripts = validate_scripts(scripts, length_mode)
+
+    new_animals = [s.get("animal_keyword", "").lower().strip() for s in scripts if s.get("animal_keyword")]
+    mark_animals_used(new_animals)
+    log.info(f"Marked {len(new_animals)} new animals as used: {new_animals}")
+    log.info(f"Generated {len(scripts)} scripts")
+    
+    return scripts
