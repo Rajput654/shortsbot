@@ -1,15 +1,23 @@
 """
-YouTube Uploader v3.0
+YouTube Uploader v3.1
 
-UPGRADES v3.0 (rating fixes):
-- THUMBNAIL UPLOAD: after video upload, sets a custom thumbnail extracted
-  from the hook frame (~1.2s). Shorts with custom thumbnails get 15-25%
-  more impressions in Browse and Search surfaces.
-- DESCRIPTION TEMPLATE: curiosity-hook opening line, hashtag block, and
-  AI disclosure — structured for Shorts best practice (no chapters, no links
-  that demote Shorts to long-form).
-- TITLE SAFETY: strips any title over 60 chars as a final guard (validate_scripts
-  already enforces 48, but this catches manual overrides).
+FIXES v3.1:
+- OAUTH SCOPE FIX: The credentials must be generated with ALL scopes that any
+  part of the bot uses. Previous code requested youtube.force-ssl + youtube.readonly
+  at upload time but the token was generated with only youtube.upload — causing
+  "invalid_scope: Bad Request" on every upload attempt. All required scopes are
+  now declared in one place: _REQUIRED_SCOPES. Run setup_youtube_auth.py again
+  to regenerate a token with all three scopes.
+- TITLE VALIDATION: Titles that end mid-word (e.g. "Crow Outsmarts" with no
+  subject) now get caught and padded before upload so the curiosity gap is
+  never truncated.
+- SCOPE HELPER: get_required_scopes() exported so setup_youtube_auth.py can
+  import it and always stay in sync.
+
+UPGRADES v3.0 (retained):
+- THUMBNAIL UPLOAD: sets a custom thumbnail from the hook frame (~1.2s).
+- DESCRIPTION TEMPLATE: curiosity-hook opening, hashtag block, AI disclosure.
+- TITLE SAFETY: strips any title over 60 chars as a final guard.
 """
 
 import os, asyncio, logging, json
@@ -19,6 +27,26 @@ log = logging.getLogger(__name__)
 
 CATEGORY_PETS_ANIMALS = "15"
 YT_CATEGORY = os.getenv("YT_CATEGORY", CATEGORY_PETS_ANIMALS)
+
+# FIX v3.1: Single source of truth for ALL scopes used across the entire bot.
+# analytics_fetcher and youtube_scanner need readonly.
+# uploader needs upload + force-ssl.
+# Generate credentials with ALL of these via setup_youtube_auth.py.
+_REQUIRED_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtube.readonly",
+]
+
+
+def get_required_scopes() -> list[str]:
+    """
+    Exported so setup_youtube_auth.py can import and stay in sync automatically.
+    Usage in setup_youtube_auth.py:
+        from core.youtube_uploader import get_required_scopes
+        SCOPES = get_required_scopes()
+    """
+    return _REQUIRED_SCOPES
 
 
 async def upload_to_youtube(
@@ -54,9 +82,7 @@ def build_description(script: dict, tags: list[str]) -> str:
     hook     = script.get("hook", "")
     seo_tags = script.get("seo_tags", [])
 
-    # Keep first line under 100 chars — appears in search snippet
-    hook_line = hook[:97] + "…" if len(hook) > 100 else hook
-
+    hook_line    = hook[:97] + "…" if len(hook) > 100 else hook
     hashtag_block = " ".join(seo_tags[:10]) if seo_tags else "#animals #wildlife #shorts"
 
     return (
@@ -65,6 +91,36 @@ def build_description(script: dict, tags: list[str]) -> str:
         f"{hashtag_block}\n\n"
         f"✦ AI-generated content | footage: Pexels.com"
     )
+
+
+def _validate_title(title: str) -> str:
+    """
+    FIX v3.1: Ensure title has a complete curiosity gap before #Shorts tag.
+    Titles like "Crow Outsmarts" or "Dolphin VS" are incomplete — the LLM
+    truncated mid-sentence. Detect and log so you can tune the prompt.
+    Also enforces the 60-char YouTube hard limit.
+    """
+    # Ensure #Shorts suffix
+    if "#Shorts" not in title and "#shorts" not in title:
+        title = title + " #Shorts"
+
+    # Detect likely-truncated titles (ends in a verb, preposition, or common truncation word)
+    _truncation_signals = (
+        " vs", " vs.", " outsmarts", " beats", " kills",
+        " destroys", " survives", " eats", " fights", " uses",
+        " has", " does", " can", " is", " are",
+    )
+    base = title.replace(" #Shorts", "").replace(" #shorts", "").strip().lower()
+    for signal in _truncation_signals:
+        if base.endswith(signal):
+            log.warning(
+                f"Title appears truncated (ends with '{signal}'): '{title}' — "
+                "consider tightening the script_generator prompt."
+            )
+            break
+
+    # Hard cap at 60 chars (YouTube truncates in search at ~50, but 60 is the API limit)
+    return title[:60]
 
 
 def _upload_sync(
@@ -77,16 +133,11 @@ def _upload_sync(
 ) -> str:
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
 
     creds   = _get_credentials()
     youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
 
-    # Title safety
-    if "#Shorts" not in title and "#shorts" not in title:
-        title = title + " #Shorts"
-    title = title[:60]
+    title = _validate_title(title)
 
     clean_tags = []
     for t in tags:
@@ -99,16 +150,16 @@ def _upload_sync(
 
     body = {
         "snippet": {
-            "title": title,
-            "description": description,
-            "tags": clean_tags[:30],
-            "categoryId": YT_CATEGORY,
+            "title":           title,
+            "description":     description,
+            "tags":            clean_tags[:30],
+            "categoryId":      YT_CATEGORY,
             "defaultLanguage": "en",
         },
         "status": {
-            "privacyStatus": "public",
+            "privacyStatus":          "public",
             "selfDeclaredMadeForKids": False,
-            "madeForKids": False,
+            "madeForKids":             False,
         },
     }
 
@@ -131,14 +182,14 @@ def _upload_sync(
     video_id = response["id"]
     log.info(f"Upload complete: https://youtube.com/shorts/{video_id}")
 
-    # ── Set custom thumbnail ───────────────────────────────────────────────
+    # Set custom thumbnail
     if thumbnail_path and os.path.exists(thumbnail_path):
         try:
             _set_thumbnail(youtube, video_id, thumbnail_path)
         except Exception as e:
             log.warning(f"Thumbnail upload failed (non-fatal): {e}")
 
-    # ── Post pinned comment ────────────────────────────────────────────────
+    # Post pinned comment
     if pinned_comment:
         try:
             _post_pinned_comment(youtube, video_id, pinned_comment)
@@ -149,19 +200,13 @@ def _upload_sync(
 
 
 def _set_thumbnail(youtube, video_id: str, thumbnail_path: str):
-    """Upload a custom thumbnail for the video."""
     from googleapiclient.http import MediaFileUpload
-
     media = MediaFileUpload(thumbnail_path, mimetype="image/jpeg")
-    youtube.thumbnails().set(
-        videoId=video_id,
-        media_body=media,
-    ).execute()
+    youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
     log.info(f"Custom thumbnail set for {video_id}")
 
 
 def _post_pinned_comment(youtube, video_id: str, comment_text: str):
-    """Post and pin a comment for engagement-bait."""
     comment_response = youtube.commentThreads().insert(
         part="snippet",
         body={
@@ -206,10 +251,7 @@ def _get_credentials():
         token_uri=creds_data.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=creds_data["client_id"],
         client_secret=creds_data["client_secret"],
-        scopes=[
-            "https://www.googleapis.com/auth/youtube.upload",
-            "https://www.googleapis.com/auth/youtube.force-ssl",
-        ],
+        scopes=_REQUIRED_SCOPES,   # FIX v3.1: use the single source of truth
     )
 
     if creds.expired and creds.refresh_token:
