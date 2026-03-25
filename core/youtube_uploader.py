@@ -18,6 +18,8 @@ UPGRADES v3.0 (retained):
 - THUMBNAIL UPLOAD: sets a custom thumbnail from the hook frame (~1.2s).
 - DESCRIPTION TEMPLATE: curiosity-hook opening, hashtag block, AI disclosure.
 - TITLE SAFETY: strips any title over 60 chars as a final guard.
+
+NICHE UPDATE: build_description() updated for funny animal moments niche.
 """
 
 import os, asyncio, logging, json
@@ -28,10 +30,6 @@ log = logging.getLogger(__name__)
 CATEGORY_PETS_ANIMALS = "15"
 YT_CATEGORY = os.getenv("YT_CATEGORY", CATEGORY_PETS_ANIMALS)
 
-# FIX v3.1: Single source of truth for ALL scopes used across the entire bot.
-# analytics_fetcher and youtube_scanner need readonly.
-# uploader needs upload + force-ssl.
-# Generate credentials with ALL of these via setup_youtube_auth.py.
 _REQUIRED_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.force-ssl",
@@ -40,12 +38,6 @@ _REQUIRED_SCOPES = [
 
 
 def get_required_scopes() -> list[str]:
-    """
-    Exported so setup_youtube_auth.py can import and stay in sync automatically.
-    Usage in setup_youtube_auth.py:
-        from core.youtube_uploader import get_required_scopes
-        SCOPES = get_required_scopes()
-    """
     return _REQUIRED_SCOPES
 
 
@@ -57,11 +49,6 @@ async def upload_to_youtube(
     pinned_comment: str = "",
     thumbnail_path: str = "",
 ) -> str:
-    """
-    Upload video to YouTube as a public Short.
-    Optionally sets a custom thumbnail and posts a pinned comment.
-    Returns YouTube video ID.
-    """
     loop = asyncio.get_event_loop()
     video_id = await loop.run_in_executor(
         None,
@@ -71,40 +58,36 @@ async def upload_to_youtube(
     return video_id
 
 
+# ── CHANGE: Updated build_description() for funny animal moments niche ─────────
 def build_description(script: dict, tags: list[str]) -> str:
     """
-    Build a Shorts-optimised description.
-    - Curiosity hook (2 lines max) referencing the animal
-    - Hashtag block (no chapter markers — those convert Shorts to long-form)
-    - AI content disclosure (required by YouTube policy)
+    Build a Shorts-optimised description for the funny animal moments niche.
+    - Curiosity hook (2 lines max)
+    - Niche-specific follow CTA
+    - Hashtag block
+    - AI content disclosure
     """
     animal   = script.get("animal_keyword", "this animal").title()
     hook     = script.get("hook", "")
     seo_tags = script.get("seo_tags", [])
 
-    hook_line    = hook[:97] + "…" if len(hook) > 100 else hook
-    hashtag_block = " ".join(seo_tags[:10]) if seo_tags else "#animals #wildlife #shorts"
+    hook_line     = hook[:97] + "…" if len(hook) > 100 else hook
+    # Updated: funny-niche hashtag fallback instead of #wildlife
+    hashtag_block = " ".join(seo_tags[:10]) if seo_tags else "#animals #funny #shorts"
 
     return (
         f"{hook_line}\n\n"
-        f"Everything you need to know about the {animal} in under a minute.\n\n"
+        # Updated: niche-specific follow CTA instead of "everything you need to know"
+        f"Follow for daily funny animal moments 🐾\n\n"
         f"{hashtag_block}\n\n"
         f"✦ AI-generated content | footage: Pexels.com"
     )
 
 
 def _validate_title(title: str) -> str:
-    """
-    FIX v3.1: Ensure title has a complete curiosity gap before #Shorts tag.
-    Titles like "Crow Outsmarts" or "Dolphin VS" are incomplete — the LLM
-    truncated mid-sentence. Detect and log so you can tune the prompt.
-    Also enforces the 60-char YouTube hard limit.
-    """
-    # Ensure #Shorts suffix
     if "#Shorts" not in title and "#shorts" not in title:
         title = title + " #Shorts"
 
-    # Detect likely-truncated titles (ends in a verb, preposition, or common truncation word)
     _truncation_signals = (
         " vs", " vs.", " outsmarts", " beats", " kills",
         " destroys", " survives", " eats", " fights", " uses",
@@ -119,7 +102,6 @@ def _validate_title(title: str) -> str:
             )
             break
 
-    # Hard cap at 60 chars (YouTube truncates in search at ~50, but 60 is the API limit)
     return title[:60]
 
 
@@ -144,7 +126,7 @@ def _upload_sync(
         tag = t.lstrip("#").strip()
         if tag:
             clean_tags.append(tag)
-    for must_have in ["Shorts", "AnimalFacts", "Animals", "Wildlife"]:
+    for must_have in ["Shorts", "FunnyAnimals", "Animals", "Pets"]:
         if must_have not in clean_tags:
             clean_tags.append(must_have)
 
@@ -182,14 +164,12 @@ def _upload_sync(
     video_id = response["id"]
     log.info(f"Upload complete: https://youtube.com/shorts/{video_id}")
 
-    # Set custom thumbnail
     if thumbnail_path and os.path.exists(thumbnail_path):
         try:
             _set_thumbnail(youtube, video_id, thumbnail_path)
         except Exception as e:
             log.warning(f"Thumbnail upload failed (non-fatal): {e}")
 
-    # Post pinned comment
     if pinned_comment:
         try:
             _post_pinned_comment(youtube, video_id, pinned_comment)
@@ -251,7 +231,7 @@ def _get_credentials():
         token_uri=creds_data.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=creds_data["client_id"],
         client_secret=creds_data["client_secret"],
-        scopes=_REQUIRED_SCOPES,   # FIX v3.1: use the single source of truth
+        scopes=_REQUIRED_SCOPES,
     )
 
     if creds.expired and creds.refresh_token:
