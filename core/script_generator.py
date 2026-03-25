@@ -6,6 +6,8 @@ CHANGES v3.1:
 - Improved 400 error logging: now prints the actual response body so you
   can see exactly why Groq/Gemini rejected the request.
 - Reduced prompt token count slightly to avoid edge-case 400s on Groq.
+
+NICHE UPDATE: Changed from "animal facts" to "funny animal moments".
 """
 
 import os, json, asyncio, httpx, logging
@@ -24,30 +26,31 @@ CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 
 PERFORMANCE_LOG = os.path.join(os.path.dirname(__file__), "..", "performance_log.json")
 
+# ── CHANGE 1: Updated SUBNICHES from animal facts → funny animal moments ──────
 SUBNICHES = [
-    "Animals with abilities so ridiculous they sound made up",
-    "Animals that would absolutely destroy humans in a fight",
-    "Deep sea creatures that look like nightmares",
-    "Animals with superpowers that make humans look pathetic",
-    "Animal world records so extreme they break your brain",
-    "Animals that cheat death in the most insane ways",
-    "Baby animals that are secretly terrifying killers",
-    "Animals that are way smarter than your average human",
-    "Prehistoric monsters that make T-Rex look cute",
-    "Animals that science still cannot explain",
+    "Animals caught doing hilariously dumb things on camera",
+    "Pets having absolute meltdowns over nothing",
+    "Animals that clearly think they are human",
+    "Wild animals completely failing at basic tasks",
+    "Cats and dogs having existential crises",
+    "Animals reacting to mirrors, vacuums, and cucumbers",
+    "Baby animals discovering the world for the first time",
+    "Animals with zero survival instincts whatsoever",
+    "Pets interrupting their owners at the worst moments",
+    "Animals that are just built differently",
 ]
 
 LENGTH_MODES = ["short", "short", "long", "long"]
 
-# ── Few-shot examples injected into every prompt ──────────────────────────────
+# ── CHANGE 2: Updated FEW_SHOT_VIRAL examples to funny/personality-driven tone ─
 FEW_SHOT_VIRAL = """
-VIRAL EXAMPLE 1 (hook_type: wrong_fact, length: short, ~38 words):
-{"title":"The mantis shrimp punches at bullet speed #Shorts","animal_keyword":"mantis shrimp","hook":"This tiny shrimp hits harder than a bullet.","body":"The mantis shrimp strikes at 50 mph... Wait. That's faster than a pro boxer. Nope — it actually breaks aquarium glass.","cta":"Send this to someone who thinks size matters.","shock_word":"IMPOSSIBLE","loop_hook":"So next time you see something tiny... remember the shrimp."}
+VIRAL EXAMPLE 1 (hook_type: chaos_normal, length: short, ~38 words):
+{"title":"This dog just called his owner out #Shorts","animal_keyword":"golden retriever","hook":"This dog heard his owner lie and he was NOT okay with it.","body":"Owner says 'we're not going to the vet'... dog stares. Wait. Owner grabs the car keys. Nope. Dog sits down. Actually — he sat down and refused to move for 45 minutes.","cta":"Send this to someone whose dog does this.","shock_word":"REFUSED","loop_hook":"Still think dogs don't understand everything you say?"}
 
-VIRAL EXAMPLE 2 (hook_type: vs_battle, length: long, ~175 words):
-{"title":"The wolverine vs a grizzly bear #Shorts","animal_keyword":"wolverine","hook":"A 30-pound animal just chased a grizzly bear off its kill.","body":"The wolverine. It doesn't have claws — it has hooks attached to rage. Scientists actually... watched wolverines steal food from wolves, black bears, and yes, grizzlies. Wait. How? Its skeleton is built to take hits. Its jaws can crush frozen bone. And it never — ever — backs down. Nope. Not from anything. One researcher watched a wolverine hold a carcass for six hours against three wolves. Six hours. That's not survival. That's dominance.","cta":"Tag someone with wolverine energy.","shock_word":"NEVER","loop_hook":"Still think bears are the scariest thing in the forest?"}
+VIRAL EXAMPLE 2 (hook_type: wrong_fact, length: long, ~175 words):
+{"title":"This cat owns the whole house #Shorts","animal_keyword":"cat","hook":"Your cat is not ignoring you. It's judging you.","body":"Scientists studied 100 cats for 3 years... Wait. Cats recognise their owner's voice within milliseconds. Nope — they just choose not to respond. Actually, MRI scans showed cats feel the same attachment as dogs. They just express it differently. How? By knocking your water off the table at 3am. By sitting on your laptop during a meeting. By yelling at 2am for no reason. That's not random. That's communication. And here's the wild part — cats that ignore you most are actually the most bonded to you. The silent treatment IS the love language.","cta":"Send this to someone who thinks their cat hates them.","shock_word":"JUDGING","loop_hook":"So next time your cat ignores you... it actually means the opposite."}
 
-AVOID: Hooks starting with 'Did you know', passive body text, 'like and subscribe' CTAs, titles over 48 chars.
+AVOID: Hooks starting with 'Did you know', dry facts with no personality, 'like and subscribe' CTAs, titles over 48 chars.
 """
 
 
@@ -108,7 +111,7 @@ def get_best_hook_types() -> list[str]:
         log.info(f"Hook type A/B: top performers = {ranked[:3]}")
         return top
 
-    return ["wrong_fact", "vs_battle", "scale_shock", "chaos_normal"]
+    return ["chaos_normal", "wrong_fact", "scale_shock", "vs_battle"]
 
 
 def load_performance_feedback() -> str:
@@ -152,9 +155,10 @@ def build_prompt(count: int, subniche: str, used_animals: list[str],
 - Loop MUST be seamless: end of CTA leads back into hook."""
     else:
         length_instructions = """TARGET: 45-55 SECOND DEEP-DIVE (155-175 words, title MAX 48 chars).
-- Escalating stakes: Fact 1 weird, Fact 2 scary, Fact 3 impossible.
+- Escalating stakes: Moment 1 weird, Moment 2 funnier, Moment 3 unbelievable.
 - At least 3 pattern interrupts (Wait... / Nope. / Actually...)."""
 
+    # ── CHANGE 3: Updated VIRAL RULES for funny-moments niche ─────────────────
     return f"""You are a master of YouTube Shorts virality. Write {count} scripts about "{subniche}".
 {exclusion}
 {performance_feedback}
@@ -165,10 +169,11 @@ def build_prompt(count: int, subniche: str, used_animals: list[str],
 
 VIRAL RULES:
 1. INVOLUNTARY REPLAY: Script end resolves the hook setup.
-2. NO 'AS YOU CAN SEE': Audio-only engagement.
+2. REACTION-FIRST: Lead with the animal's reaction/behavior, not a dry fact.
 3. TYPE B CTA: Share-bait only. "Send this to someone who..."
 4. PATTERN INTERRUPTS: Use 'Wait...', 'Nope.', or 'Actually...' in body.
-5. TITLE: MAX 48 characters including spaces. Curiosity gap. No filler.
+5. TITLE: MAX 48 characters. Must tease the funny moment without revealing it.
+6. TONE: Conversational, like texting a friend. NOT a nature documentary.
 
 Respond ONLY with a raw JSON array. No markdown, no backticks, no preamble.
 
@@ -180,12 +185,12 @@ Respond ONLY with a raw JSON array. No markdown, no backticks, no preamble.
     "hook": "Must stop the swipe in 1.5 seconds.",
     "body": "Fast paced. Use '...' for pauses. Min 3 pattern interrupts for long mode.",
     "cta": "TYPE B focus (Share Bait).",
-    "shock_word": "ONE all-caps word e.g. IMPOSSIBLE / INSANE / WAIT",
+    "shock_word": "ONE all-caps word e.g. REFUSED / NOPE / WAIT",
     "loop_hook": "1-2 sentences bridging CTA back to hook.",
-    "hook_type": "wrong_fact | scale_shock | vs_battle | chaos_normal",
+    "hook_type": "chaos_normal | wrong_fact | scale_shock | vs_battle",
     "cta_type": "B",
     "seo_tags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
-    "pinned_comment": "Debate-bait question e.g. 'Would you survive this animal?'"
+    "pinned_comment": "Debate-bait question e.g. 'Does your pet do this too?'"
   }}
 ]"""
 
@@ -223,13 +228,13 @@ def validate_scripts(scripts: list, length_mode: str) -> list:
         if not s.get("shock_word"):
             s["shock_word"] = "WAIT"
         if not s.get("loop_hook") or len(s.get("loop_hook", "").split()) < 3:
-            s["loop_hook"] = f"Wait... did you catch that? Look at the {s.get('animal_keyword', 'animal')} again."
+            s["loop_hook"] = f"Wait... did you catch that? Watch the {s.get('animal_keyword', 'animal')} again."
         if not s.get("seo_tags") or len(s.get("seo_tags", [])) < 3:
             animal_tag = s.get("animal_keyword", "animal").replace(" ", "").lower()
-            s["seo_tags"] = [f"#{animal_tag}", "#wildlife", "#animalfacts", "#shorts", "#nature"]
+            s["seo_tags"] = [f"#{animal_tag}", "#funnyanimals", "#pets", "#shorts", "#animals"]
         if not s.get("pinned_comment"):
             animal = s.get("animal_keyword", "this animal")
-            s["pinned_comment"] = f"Could you survive an encounter with a {animal}? Drop your answer below 👇"
+            s["pinned_comment"] = f"Does your {animal} do this too? Drop a 🐾 below!"
         s["length_mode"] = length_mode
         fixed.append(s)
     return fixed
@@ -254,7 +259,6 @@ async def _try_groq(prompt: str) -> list:
             await asyncio.sleep(wait_time)
             continue
         if resp.status_code == 400:
-            # Log full response body so you can see exactly what went wrong
             log.error(f"Groq 400 Bad Request — response body: {resp.text}")
             resp.raise_for_status()
         resp.raise_for_status()
@@ -296,7 +300,7 @@ async def _try_claude(prompt: str) -> list:
         "Content-Type": "application/json",
     }
     body = {
-        "model": "claude-haiku-4-5-20251001",   # Fastest + cheapest Anthropic model
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 4000,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -325,8 +329,8 @@ async def generate_scripts(count: int = 1) -> list[dict]:
             "  ANTHROPIC_API_KEY — paid, at console.anthropic.com"
         )
 
-    subniche       = get_todays_subniche()
-    length_mode    = get_optimised_length_mode()
+    subniche        = get_todays_subniche()
+    length_mode     = get_optimised_length_mode()
     best_hook_types = get_best_hook_types()
 
     log.info(f"Sub-niche: {subniche}")
@@ -340,7 +344,6 @@ async def generate_scripts(count: int = 1) -> list[dict]:
 
     scripts = None
 
-    # ── Provider waterfall: Groq → Gemini → Claude ────────────────────────────
     if GROQ_API_KEY:
         try:
             scripts = await _try_groq(prompt)
