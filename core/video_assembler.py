@@ -10,7 +10,6 @@ from pathlib import Path
 from core.tts_engine import get_audio_duration
 from core.caption_sync import group_into_chunks, build_caption_drawtext
 
-# IMPORTANT: Ensure your file is named core/trending_audio.py (all lowercase)
 from core.trending_audio import get_track_for_script
 
 FFMPEG = os.getenv("FFMPEG_PATH", "ffmpeg")
@@ -55,6 +54,10 @@ async def assemble_video(
         word_timings=word_timings
     )
     
+    # Clean up the temporary raw footage to save disk space
+    if os.path.exists(tmp_footage):
+        os.remove(tmp_footage)
+        
     return output_path
 
 async def _build_footage(
@@ -102,15 +105,27 @@ async def _build_footage(
     ]
     await _run_ffmpeg(cmd, "footage build")
 
+
 async def _ffmpeg_assemble(
     video_path: str, audio_path: str, music_path, script: dict,
     duration: float, output_path: str, word_timings: list[dict],
 ):
-    font = FONT_PATH if os.path.exists(FONT_PATH) else ""
+    # VIRAL FIX: Headless Font Fallback
+    if os.path.exists(FONT_PATH):
+        font = FONT_PATH
+    else:
+        log.warning(f"Custom font not found at {FONT_PATH}. Using system default.")
+        font = ""
 
-    # Viral Retention: 1-word rapid fire captions
-    caption_chunks = group_into_chunks(word_timings, chunk_size=1)
-    caption_filter = build_caption_drawtext(caption_chunks, font, VIDEO_H, VIDEO_W)
+    # Viral Retention: 1-word rapid fire captions with safety fallback
+    if word_timings:
+        caption_chunks = group_into_chunks(word_timings, chunk_size=1)
+        caption_filter = build_caption_drawtext(caption_chunks, font, VIDEO_H, VIDEO_W)
+    else:
+        caption_filter = "null"
+
+    # Swap to 'copy' if no captions exist so FFmpeg doesn't crash on 'null'
+    safe_caption_filter = caption_filter if caption_filter != "null" else "copy"
     
     # Seamless Loop: Involuntary rewatch trigger
     xfade_duration = 0.3
@@ -122,24 +137,25 @@ async def _ffmpeg_assemble(
         f"[va][vb]xfade=transition=fade:duration={xfade_duration}:offset={xfade_offset}[vlooped]"
     )
 
-    # Audio Mastering: Bass boost + Sidechain Compression (Music ducks for voice)
+    # Audio Mastering: Bass boost + Compression for authoritative voice
     voice_mastering = "bass=g=6:f=110,compand=attacks=0:points=-80/-80|-15/-15|0/-10.8|20/-5.2,volume=1.2"
 
-    filter_complex = f"{loop_filter};[vlooped]{caption_filter}[vout];[1:a]{voice_mastering}[voice];"
+    filter_complex = f"{loop_filter};[vlooped]{safe_caption_filter}[vout];[1:a]{voice_mastering}[voice];"
     
     # Standard FFmpeg inputs
     cmd = [FFMPEG, "-y", "-i", video_path, "-i", audio_path]
 
-    # Handle optional music track with sidechaining
+    # Handle optional music track with sidechain ducking
     if music_path and os.path.exists(music_path):
         cmd.extend(["-i", music_path])
         filter_complex += (
-            f"[2:a]volume=0.1,aloop=loop=-1:size=44100[music_loop];"
-            f"[music_loop][voice]sidechaincompress=threshold=0.15:ratio=20:release=200[music_ducked];"
+            f"[2:a]volume=0.25,aloop=loop=-1:size=44100[music_loop];"
+            f"[music_loop][voice]sidechaincompress=threshold=0.1:ratio=10:attack=5:release=150[music_ducked];"
             f"[voice][music_ducked]amix=inputs=2:duration=first[aout]"
         )
     else:
-        filter_complex += "[voice]copy[aout]"
+        # VIRAL FIX: 'copy' is not a valid audio filter. 'anull' prevents a crash.
+        filter_complex += "[voice]anull[aout]"
 
     cmd.extend([
         "-filter_complex", filter_complex,
@@ -151,6 +167,7 @@ async def _ffmpeg_assemble(
         output_path
     ])
     await _run_ffmpeg(cmd, "final assembly")
+
 
 async def _run_ffmpeg(cmd: list[str], task_name: str):
     """Helper to run FFmpeg commands asynchronously."""
