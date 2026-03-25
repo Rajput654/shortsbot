@@ -1,17 +1,11 @@
 """
-Script Generator v3.0 — uses Groq API (100% FREE).
+Script Generator v3.1 — Groq (primary) → Gemini → Claude (fallbacks).
 
-UPGRADES v3.0 (rating fixes):
-- FEW-SHOT EXAMPLES: 2 concrete viral examples injected into every prompt.
-  LLMs produce far more consistent output with examples than with rules alone.
-- TITLE LENGTH ENFORCER: Titles capped at 48 chars in validate_scripts().
-  YouTube truncates at ~50 chars in search; shorter = full curiosity gap visible.
-- NEGATIVE EXAMPLES: Explicit "avoid" patterns from low-EVR videos injected
-  alongside positive examples.
-- HOOK_TYPE A/B TRACKING: generate_scripts() selects hook_type based on
-  historical EVR win-rates from performance_log.json, not round-robin.
-- LENGTH_MODE OPTIMISER: picks short vs long based on which EVR is higher in logs.
-- GROQ SAFETY: exponential backoff retry loop for 429 Rate Limits.
+CHANGES v3.1:
+- Added Anthropic Claude as third fallback provider.
+- Improved 400 error logging: now prints the actual response body so you
+  can see exactly why Groq/Gemini rejected the request.
+- Reduced prompt token count slightly to avoid edge-case 400s on Groq.
 """
 
 import os, json, asyncio, httpx, logging
@@ -20,11 +14,13 @@ from core.animal_tracker import get_used_animals, mark_animals_used, build_exclu
 
 log = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 
 PERFORMANCE_LOG = os.path.join(os.path.dirname(__file__), "..", "performance_log.json")
 
@@ -46,43 +42,12 @@ LENGTH_MODES = ["short", "short", "long", "long"]
 # ── Few-shot examples injected into every prompt ──────────────────────────────
 FEW_SHOT_VIRAL = """
 VIRAL EXAMPLE 1 (hook_type: wrong_fact, length: short, ~38 words):
-{
-  "title": "The mantis shrimp punches at bullet speed #Shorts",
-  "animal_keyword": "mantis shrimp",
-  "hook": "This tiny shrimp hits harder than a bullet.",
-  "body": "The mantis shrimp strikes at 50 mph... Wait. That's faster than a pro boxer. Nope — it actually breaks aquarium glass.",
-  "cta": "Send this to someone who thinks size matters.",
-  "shock_word": "IMPOSSIBLE",
-  "loop_hook": "So next time you see something tiny... remember the shrimp."
-}
+{"title":"The mantis shrimp punches at bullet speed #Shorts","animal_keyword":"mantis shrimp","hook":"This tiny shrimp hits harder than a bullet.","body":"The mantis shrimp strikes at 50 mph... Wait. That's faster than a pro boxer. Nope — it actually breaks aquarium glass.","cta":"Send this to someone who thinks size matters.","shock_word":"IMPOSSIBLE","loop_hook":"So next time you see something tiny... remember the shrimp."}
 
 VIRAL EXAMPLE 2 (hook_type: vs_battle, length: long, ~175 words):
-{
-  "title": "The wolverine vs a grizzly bear #Shorts",
-  "animal_keyword": "wolverine",
-  "hook": "A 30-pound animal just chased a grizzly bear off its kill.",
-  "body": "The wolverine. It doesn't have claws — it has hooks attached to rage. Scientists actually... Actually they've watched wolverines steal food from wolves, black bears, and yes, grizzlies. Wait. How? Its skeleton is built to take hits. Its jaws can crush frozen bone. And it never — ever — backs down. Nope. Not from anything. One researcher watched a wolverine hold a carcass for six hours against three wolves. Six hours. That's not survival. That's dominance.",
-  "cta": "Tag someone with wolverine energy.",
-  "shock_word": "NEVER",
-  "loop_hook": "Still think bears are the scariest thing in the forest?"
-}
+{"title":"The wolverine vs a grizzly bear #Shorts","animal_keyword":"wolverine","hook":"A 30-pound animal just chased a grizzly bear off its kill.","body":"The wolverine. It doesn't have claws — it has hooks attached to rage. Scientists actually... watched wolverines steal food from wolves, black bears, and yes, grizzlies. Wait. How? Its skeleton is built to take hits. Its jaws can crush frozen bone. And it never — ever — backs down. Nope. Not from anything. One researcher watched a wolverine hold a carcass for six hours against three wolves. Six hours. That's not survival. That's dominance.","cta":"Tag someone with wolverine energy.","shock_word":"NEVER","loop_hook":"Still think bears are the scariest thing in the forest?"}
 
-AVOID (low retention patterns):
-- Hooks starting with "Did you know..." (too passive, gets swiped)
-- Body text with more than 2 consecutive sentences without a pattern interrupt
-- CTAs that say "like and subscribe" (zero share-bait value)
-- Titles longer than 48 characters (gets truncated in search)
-"""
-
-FEW_SHOT_NEGATIVE = """
-BAD EXAMPLE (do NOT write like this):
-{
-  "title": "10 Incredible Facts About the Amazing Bombardier Beetle You Won't Believe",
-  "hook": "Did you know the bombardier beetle is one of nature's most fascinating creatures?",
-  "body": "The bombardier beetle is truly remarkable. It has many interesting abilities. First, it can spray chemicals. Second, it can aim precisely. These are just some of the amazing things about this insect.",
-  "cta": "Like and subscribe for more animal content!"
-}
-WHY IT FAILS: Title is 67 chars (truncated), hook is passive, body has no pattern interrupts, CTA has no share-bait.
+AVOID: Hooks starting with 'Did you know', passive body text, 'like and subscribe' CTAs, titles over 48 chars.
 """
 
 
@@ -94,7 +59,6 @@ def get_todays_subniche() -> str:
 
 
 def _load_performance_data() -> dict:
-    """Load raw performance data for optimisation decisions."""
     if not os.path.exists(PERFORMANCE_LOG):
         return {"videos": []}
     try:
@@ -105,10 +69,6 @@ def _load_performance_data() -> dict:
 
 
 def get_optimised_length_mode() -> str:
-    """
-    Pick length_mode based on which has better average EVR in recent logs.
-    Falls back to time-based slot if not enough data.
-    """
     data = _load_performance_data()
     videos = data.get("videos", [])
 
@@ -122,17 +82,12 @@ def get_optimised_length_mode() -> str:
         log.info(f"Length mode optimiser: short EVR={avg_short:.1%} long EVR={avg_long:.1%} → using '{winner}'")
         return winner
 
-    # Not enough data — fall back to time-based slot
     now = datetime.now()
     hour_slot = now.hour // 6
     return LENGTH_MODES[hour_slot % len(LENGTH_MODES)]
 
 
 def get_best_hook_types() -> list[str]:
-    """
-    Return hook_types ranked by average EVR. Used to bias the prompt.
-    Returns top 2 types if enough data, else all types.
-    """
     data = _load_performance_data()
     videos = data.get("videos", [])
 
@@ -157,7 +112,6 @@ def get_best_hook_types() -> list[str]:
 
 
 def load_performance_feedback() -> str:
-    """Build feedback block for prompt injection."""
     data = _load_performance_data()
     videos = data.get("videos", [])
     if len(videos) < 5:
@@ -193,15 +147,13 @@ def build_prompt(count: int, subniche: str, used_animals: list[str],
     hook_preference = f"PREFERRED hook_types for this run (highest EVR): {', '.join(best_hook_types)}"
 
     if length_mode == "short":
-        length_instructions = """
-TARGET: 13-SECOND 'ULTRA-SHORT' (38-42 words, title MAX 48 chars).
-- Aim for 100% completion.
-- The loop MUST be seamless: end of CTA leads into first word of hook."""
+        length_instructions = """TARGET: 13-SECOND ULTRA-SHORT (38-42 words, title MAX 48 chars).
+- Aim for 100% completion rate.
+- Loop MUST be seamless: end of CTA leads back into hook."""
     else:
-        length_instructions = """
-TARGET: 45-55 SECOND 'DEEP-DIVE' (155-175 words, title MAX 48 chars).
-- Escalating Stakes: Fact 1 is weird, Fact 2 is scary, Fact 3 is impossible.
-- Include at least 3 pattern interrupts (Wait... / Nope. / Actually...)."""
+        length_instructions = """TARGET: 45-55 SECOND DEEP-DIVE (155-175 words, title MAX 48 chars).
+- Escalating stakes: Fact 1 weird, Fact 2 scary, Fact 3 impossible.
+- At least 3 pattern interrupts (Wait... / Nope. / Actually...)."""
 
     return f"""You are a master of YouTube Shorts virality. Write {count} scripts about "{subniche}".
 {exclusion}
@@ -209,15 +161,14 @@ TARGET: 45-55 SECOND 'DEEP-DIVE' (155-175 words, title MAX 48 chars).
 {hook_preference}
 
 {FEW_SHOT_VIRAL}
-{FEW_SHOT_NEGATIVE}
 {length_instructions}
 
 VIRAL RULES:
-1. THE INVOLUNTARY REPLAY: Script ends with a setup the hook resolves.
+1. INVOLUNTARY REPLAY: Script end resolves the hook setup.
 2. NO 'AS YOU CAN SEE': Audio-only engagement.
-3. TYPE B CTA: Focus on 'Shareability'. "Send this to someone who..."
-4. PATTERN INTERRUPTS: Use 'Wait...', 'Nope.', or 'Actually...' in the body.
-5. TITLE: MAX 48 characters including spaces. Curiosity gap. No clickbait filler words.
+3. TYPE B CTA: Share-bait only. "Send this to someone who..."
+4. PATTERN INTERRUPTS: Use 'Wait...', 'Nope.', or 'Actually...' in body.
+5. TITLE: MAX 48 characters including spaces. Curiosity gap. No filler.
 
 Respond ONLY with a raw JSON array. No markdown, no backticks, no preamble.
 
@@ -234,14 +185,13 @@ Respond ONLY with a raw JSON array. No markdown, no backticks, no preamble.
     "hook_type": "wrong_fact | scale_shock | vs_battle | chaos_normal",
     "cta_type": "B",
     "seo_tags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
-    "pinned_comment": "Debate-bait question to pin as first comment e.g. 'Would you survive this animal?'"
+    "pinned_comment": "Debate-bait question e.g. 'Would you survive this animal?'"
   }}
 ]"""
 
 
 def parse_json(raw: str) -> list:
     raw = raw.strip()
-    # Strip any accidental markdown fences
     if "```json" in raw:
         raw = raw.split("```json")[1].split("```")[0].strip()
     elif "```" in raw:
@@ -254,56 +204,40 @@ def parse_json(raw: str) -> list:
 
 
 def _enforce_title_length(title: str, max_chars: int = 48) -> str:
-    """
-    Trim title to max_chars while preserving #Shorts tag and curiosity gap.
-    Strategy: remove from the middle if needed, keep the hook word and #Shorts.
-    """
     if len(title) <= max_chars:
         return title
-
-    # Always keep #Shorts
     has_shorts = "#Shorts" in title or "#shorts" in title
     base = title.replace(" #Shorts", "").replace(" #shorts", "").strip()
     suffix = " #Shorts"
     available = max_chars - len(suffix)
-
     if len(base) > available:
         base = base[:available - 1].rstrip() + "…"
-
     return base + (suffix if has_shorts else "")
 
 
 def validate_scripts(scripts: list, length_mode: str) -> list:
-    """Enforce constraints and fill missing fields."""
     fixed = []
     for s in scripts:
-        # Enforce title length cap
         if s.get("title"):
             s["title"] = _enforce_title_length(s["title"], max_chars=48)
-
         if not s.get("shock_word"):
             s["shock_word"] = "WAIT"
-
-        # Enforce loop connection
         if not s.get("loop_hook") or len(s.get("loop_hook", "").split()) < 3:
             s["loop_hook"] = f"Wait... did you catch that? Look at the {s.get('animal_keyword', 'animal')} again."
-
-        # Ensure SEO tags (min 5 for discoverability)
         if not s.get("seo_tags") or len(s.get("seo_tags", [])) < 3:
             animal_tag = s.get("animal_keyword", "animal").replace(" ", "").lower()
             s["seo_tags"] = [f"#{animal_tag}", "#wildlife", "#animalfacts", "#shorts", "#nature"]
-
-        # Ensure pinned comment exists
         if not s.get("pinned_comment"):
             animal = s.get("animal_keyword", "this animal")
             s["pinned_comment"] = f"Could you survive an encounter with a {animal}? Drop your answer below 👇"
-
         s["length_mode"] = length_mode
         fixed.append(s)
     return fixed
 
 
 async def _try_groq(prompt: str) -> list:
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY not set")
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     body = {
         "model": "llama-3.3-70b-versatile",
@@ -319,12 +253,18 @@ async def _try_groq(prompt: str) -> list:
             log.warning(f"Groq rate limit — waiting {wait_time}s...")
             await asyncio.sleep(wait_time)
             continue
+        if resp.status_code == 400:
+            # Log full response body so you can see exactly what went wrong
+            log.error(f"Groq 400 Bad Request — response body: {resp.text}")
+            resp.raise_for_status()
         resp.raise_for_status()
         return parse_json(resp.json()["choices"][0]["message"]["content"])
     raise RuntimeError("Groq rate limit exhausted after 3 attempts.")
 
 
 async def _try_gemini(prompt: str) -> list:
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY not set")
     url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -338,18 +278,56 @@ async def _try_gemini(prompt: str) -> list:
             log.warning(f"Gemini rate limit — waiting {wait}s")
             await asyncio.sleep(wait)
             continue
+        if resp.status_code == 400:
+            log.error(f"Gemini 400 Bad Request — response body: {resp.text}")
+            resp.raise_for_status()
         resp.raise_for_status()
         return parse_json(resp.json()["candidates"][0]["content"]["parts"][0]["text"])
     raise RuntimeError("Gemini quota exhausted")
 
 
-async def generate_scripts(count: int = 1) -> list[dict]:
-    if not GROQ_API_KEY and not GEMINI_API_KEY:
-        raise ValueError("No API key found! Add GROQ_API_KEY=gsk_xxx (free at console.groq.com)")
+async def _try_claude(prompt: str) -> list:
+    """Anthropic Claude as third fallback provider."""
+    if not ANTHROPIC_API_KEY:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": "claude-haiku-4-5-20251001",   # Fastest + cheapest Anthropic model
+        "max_tokens": 4000,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(CLAUDE_URL, headers=headers, json=body)
+        if resp.status_code == 429:
+            wait = 60 * (attempt + 1)
+            log.warning(f"Claude rate limit — waiting {wait}s")
+            await asyncio.sleep(wait)
+            continue
+        if resp.status_code == 400:
+            log.error(f"Claude 400 Bad Request — response body: {resp.text}")
+            resp.raise_for_status()
+        resp.raise_for_status()
+        return parse_json(resp.json()["content"][0]["text"])
+    raise RuntimeError("Claude rate limit exhausted after 3 attempts.")
 
-    subniche = get_todays_subniche()
-    length_mode = get_optimised_length_mode()          # ← now data-driven
-    best_hook_types = get_best_hook_types()            # ← A/B optimised
+
+async def generate_scripts(count: int = 1) -> list[dict]:
+    if not GROQ_API_KEY and not GEMINI_API_KEY and not ANTHROPIC_API_KEY:
+        raise ValueError(
+            "No API key found! Set at least one of:\n"
+            "  GROQ_API_KEY      — free at console.groq.com\n"
+            "  GEMINI_API_KEY    — free at aistudio.google.com\n"
+            "  ANTHROPIC_API_KEY — paid, at console.anthropic.com"
+        )
+
+    subniche       = get_todays_subniche()
+    length_mode    = get_optimised_length_mode()
+    best_hook_types = get_best_hook_types()
 
     log.info(f"Sub-niche: {subniche}")
     log.info(f"Length mode: {length_mode} (data-driven)")
@@ -361,21 +339,34 @@ async def generate_scripts(count: int = 1) -> list[dict]:
     prompt = build_prompt(count, subniche, used_animals, length_mode, best_hook_types)
 
     scripts = None
+
+    # ── Provider waterfall: Groq → Gemini → Claude ────────────────────────────
     if GROQ_API_KEY:
         try:
             scripts = await _try_groq(prompt)
+            log.info("Scripts generated via Groq.")
         except Exception as e:
             log.warning(f"Groq failed: {e} — trying Gemini...")
 
     if scripts is None and GEMINI_API_KEY:
         try:
             scripts = await _try_gemini(prompt)
+            log.info("Scripts generated via Gemini.")
         except Exception as e:
-            log.error(f"Gemini failed: {e}")
-            raise RuntimeError("All AI providers failed.")
+            log.warning(f"Gemini failed: {e} — trying Claude...")
+
+    if scripts is None and ANTHROPIC_API_KEY:
+        try:
+            scripts = await _try_claude(prompt)
+            log.info("Scripts generated via Claude (Anthropic).")
+        except Exception as e:
+            log.error(f"Claude failed: {e}")
 
     if scripts is None:
-        raise RuntimeError("All AI providers failed. Check your API keys.")
+        raise RuntimeError(
+            "All AI providers failed. Check your API keys in GitHub Secrets:\n"
+            "  GROQ_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY"
+        )
 
     scripts = validate_scripts(scripts, length_mode)
 
